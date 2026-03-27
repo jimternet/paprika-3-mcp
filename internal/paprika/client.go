@@ -5,7 +5,6 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -642,66 +641,7 @@ func (c *Client) postV2(ctx context.Context, endpoint string, v interface{}) err
 	return nil
 }
 
-// postV1 sends a gzipped JSON payload to a V1 API endpoint using Basic Auth and multipart form encoding.
-// The V1 API is required for meal and grocery writes — the V2 sync endpoints only exist for recipes.
-func (c *Client) postV1(ctx context.Context, endpoint string, data []byte) error {
-	// Gzip the data
-	var gzipBuf bytes.Buffer
-	gzWriter := gzip.NewWriter(&gzipBuf)
-	if _, err := gzWriter.Write(data); err != nil {
-		gzWriter.Close()
-		return fmt.Errorf("failed to gzip data: %w", err)
-	}
-	if err := gzWriter.Close(); err != nil {
-		return fmt.Errorf("failed to close gzip writer: %w", err)
-	}
 
-	// Build multipart form
-	var body bytes.Buffer
-	mpWriter := multipart.NewWriter(&body)
-	part, err := mpWriter.CreateFormFile("data", "data")
-	if err != nil {
-		return fmt.Errorf("failed to create form file: %w", err)
-	}
-	if _, err := part.Write(gzipBuf.Bytes()); err != nil {
-		return fmt.Errorf("failed to write form data: %w", err)
-	}
-	if err := mpWriter.Close(); err != nil {
-		return fmt.Errorf("failed to close multipart writer: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// V1 API requires Basic Auth instead of Bearer token
-	credentials := base64.StdEncoding.EncodeToString([]byte(c.username + ":" + c.password))
-	req.Header.Set("Authorization", "Basic "+credentials)
-	req.Header.Set("Content-Type", mpWriter.FormDataContentType())
-	req.ContentLength = int64(body.Len())
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	rawBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %s: %s", resp.Status, string(rawBytes))
-	}
-
-	if err := isErrorResponse(rawBytes); err != nil {
-		return err
-	}
-
-	return nil
-}
 
 type GroceryList struct {
 	UID            string `json:"uid"`
@@ -824,8 +764,8 @@ func (c *Client) ListGroceries(ctx context.Context) (*GroceryResponse, error) {
 	return &groceryResp, nil
 }
 
-// SaveMealPlan saves a meal plan entry to Paprika API using V1 API.
-// The V2 sync endpoints don't support meal writes.
+// SaveMealPlan saves a meal plan entry to the Paprika API.
+// Meals use the bulk array endpoint POST /api/v2/sync/meals/ (not the per-item pattern recipes use).
 func (c *Client) SaveMealPlan(ctx context.Context, meal MealPlan) (*MealPlan, error) {
 	if meal.UID == "" {
 		meal.UID = strings.ToUpper(uuid.New().String())
@@ -834,12 +774,7 @@ func (c *Client) SaveMealPlan(ctx context.Context, meal MealPlan) (*MealPlan, er
 
 	c.logger.Info("Saving meal", "uid", meal.UID, "name", meal.Name, "date", meal.Date, "type", meal.Type)
 
-	data, err := json.Marshal([]MealPlan{meal})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal meal: %w", err)
-	}
-
-	if err := c.postV1(ctx, "https://paprikaapp.com/api/v1/sync/meals/", data); err != nil {
+	if err := c.postV2(ctx, "https://www.paprikaapp.com/api/v2/sync/meals/", []MealPlan{meal}); err != nil {
 		return nil, fmt.Errorf("failed to save meal: %w", err)
 	}
 
@@ -851,12 +786,8 @@ func (c *Client) SaveMealPlan(ctx context.Context, meal MealPlan) (*MealPlan, er
 func (c *Client) DeleteMealPlan(ctx context.Context, uid string) error {
 	c.logger.Info("Soft-deleting meal", "uid", uid)
 
-	data, err := json.Marshal([]MealPlan{{UID: uid, Deleted: true}})
-	if err != nil {
-		return fmt.Errorf("failed to marshal meal deletion: %w", err)
-	}
-
-	if err := c.postV1(ctx, "https://paprikaapp.com/api/v1/sync/meals/", data); err != nil {
+	meal := MealPlan{UID: uid, Deleted: true}
+	if err := c.postV2(ctx, "https://www.paprikaapp.com/api/v2/sync/meals/", []MealPlan{meal}); err != nil {
 		return fmt.Errorf("failed to delete meal: %w", err)
 	}
 
@@ -864,8 +795,8 @@ func (c *Client) DeleteMealPlan(ctx context.Context, uid string) error {
 	return nil
 }
 
-// SaveGroceryItem saves a grocery item to Paprika API using V1 API.
-// The V2 sync endpoints don't support grocery writes.
+// SaveGroceryItem saves a grocery item to the Paprika API.
+// Groceries use the bulk array endpoint POST /api/v2/sync/groceries/ (not the per-item pattern recipes use).
 func (c *Client) SaveGroceryItem(ctx context.Context, item GroceryItem) (*GroceryItem, error) {
 	if item.UID == "" {
 		item.UID = strings.ToUpper(uuid.New().String())
@@ -876,12 +807,7 @@ func (c *Client) SaveGroceryItem(ctx context.Context, item GroceryItem) (*Grocer
 
 	c.logger.Info("Saving grocery item", "uid", item.UID, "ingredient", item.Ingredient, "aisle", item.Aisle)
 
-	data, err := json.Marshal([]GroceryItem{item})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal grocery item: %w", err)
-	}
-
-	if err := c.postV1(ctx, "https://paprikaapp.com/api/v1/sync/groceries/", data); err != nil {
+	if err := c.postV2(ctx, "https://www.paprikaapp.com/api/v2/sync/groceries/", []GroceryItem{item}); err != nil {
 		return nil, fmt.Errorf("failed to save grocery item: %w", err)
 	}
 
@@ -893,12 +819,8 @@ func (c *Client) SaveGroceryItem(ctx context.Context, item GroceryItem) (*Grocer
 func (c *Client) DeleteGroceryItem(ctx context.Context, uid string) error {
 	c.logger.Info("Soft-deleting grocery item", "uid", uid)
 
-	data, err := json.Marshal([]GroceryItem{{UID: uid, Deleted: true}})
-	if err != nil {
-		return fmt.Errorf("failed to marshal grocery item deletion: %w", err)
-	}
-
-	if err := c.postV1(ctx, "https://paprikaapp.com/api/v1/sync/groceries/", data); err != nil {
+	item := GroceryItem{UID: uid, Deleted: true}
+	if err := c.postV2(ctx, "https://www.paprikaapp.com/api/v2/sync/groceries/", []GroceryItem{item}); err != nil {
 		return fmt.Errorf("failed to delete grocery item: %w", err)
 	}
 
