@@ -617,6 +617,27 @@ func (s *Server) addGroceryItem(ctx context.Context, req mcp.CallToolRequest) (*
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	// Paprika orphans grocery items posted with an empty list_uid: the POST
+	// returns 200 but the item is attached to no list and never surfaces in the
+	// app (meals are unaffected because they key off date, not a list). When the
+	// caller doesn't specify a list, resolve the account's default grocery list
+	// and attach the item to it — the behavior this tool already advertises.
+	if listUID == "" {
+		lists, err := s.paprika3.ListGroceryLists(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve default grocery list: %w", err)
+		}
+		for _, l := range lists.Result {
+			if l.IsDefault {
+				listUID = l.UID
+				break
+			}
+		}
+		if listUID == "" {
+			return nil, errors.New("no default grocery list found; pass an explicit list_uid")
+		}
+	}
+
 	// Create grocery item
 	item := paprika.GroceryItem{
 		Ingredient:  ingredient,
