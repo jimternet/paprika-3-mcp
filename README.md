@@ -54,8 +54,8 @@ You can download a prebuilt binary from the [Releases](https://github.com/soggyc
 If you're on macOS, the easiest way to install is with [Homebrew](https://brew.sh/):
 
 ```bash
-brew tap soggycactus/tap
-brew install paprika-3-mcp
+brew tap jimternet/tap
+brew install jimternet/tap/paprika-3-mcp
 ```
 
 ### 🐧 Linux / 🪟 Windows
