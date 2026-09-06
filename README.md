@@ -34,8 +34,9 @@ See anything missing? Open an issue on this repo to request a feature!
 
 **Grocery Management**
 - `list_grocery_lists` — View all grocery lists (Paprika supports multiple lists, e.g. one per store)
+- `list_aisles` — View grocery store aisles (synced from Paprika Settings)
 - `list_groceries` — View grocery items across all lists, grouped by aisle, with purchase status
-- `add_grocery_item` — Add an item to a grocery list (defaults to the default list; specify `list_uid` for others)
+- `add_grocery_item` — Add an item to a grocery list with automatic aisle assignment (learned history → keyword table → Miscellaneous)
 - `remove_grocery_item` — Remove an item by name (case-insensitive partial match)
 
 ## ⚙️ Prerequisites
@@ -47,7 +48,7 @@ See anything missing? Open an issue on this repo to request a feature!
 
 ## 🛠 Installation
 
-You can download a prebuilt binary from the [Releases](https://github.com/soggycactus/paprika-3-mcp/releases) page.
+You can download a prebuilt binary from the [Releases](https://github.com/jimternet/paprika-3-mcp/releases) page.
 
 ### 🍎 macOS (via Homebrew)
 
