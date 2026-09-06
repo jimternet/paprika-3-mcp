@@ -1,6 +1,6 @@
 # paprika-3-mcp
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/introduction) server that exposes your **Paprika 3** recipes as LLM-readable resources — and lets an LLM like Claude create or update recipes in your Paprika app.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/introduction) server that connects your **Paprika 3** account to LLMs like Claude — manage recipes, plan meals, and build grocery lists through natural conversation.
 
 ### 🖼️ Example: Claude using the Paprika MCP server
 
@@ -19,10 +19,24 @@ See anything missing? Open an issue on this repo to request a feature!
 
 #### 🛠 **Tools**
 
-- `create_paprika_recipe`  
-  Allows Claude to save a new recipe to your Paprika app
-- `update_paprika_recipe`  
-  Allows Claude to modify an existing recipe
+**Recipe Management**
+- `create_paprika_recipe` — Create new recipes in your Paprika app
+- `update_paprika_recipe` — Modify existing recipes by UID
+- `get_recipe` — Get full recipe details (ingredients, directions, etc.) by UID
+- `list_recipes` — List all recipes with names, UIDs, and basic info (fast, parallel fetch)
+- `search_recipes` — Deep search recipes by keyword across name, ingredients, and description
+- `delete_recipe` — Move a recipe to the trash by UID (soft delete; recoverable in the Paprika app)
+
+**Meal Planning**
+- `list_meal_plan` — View scheduled meals, optionally filtered by date range
+- `add_meal_to_plan` — Schedule a meal (Breakfast, Lunch, or Dinner) with an optional recipe link
+- `remove_meal_from_plan` — Remove a meal from the plan by UID
+
+**Grocery Management**
+- `list_grocery_lists` — View all grocery lists (Paprika supports multiple lists, e.g. one per store)
+- `list_groceries` — View grocery items across all lists, grouped by aisle, with purchase status
+- `add_grocery_item` — Add an item to a grocery list (defaults to the default list; specify `list_uid` for others)
+- `remove_grocery_item` — Remove an item by name (case-insensitive partial match)
 
 ## ⚙️ Prerequisites
 
@@ -86,7 +100,50 @@ paprika-3-mcp version v0.1.0
 
 If you haven't setup MCP before, [first read more about how to install Claude Desktop client & configure an MCP server.](https://modelcontextprotocol.io/quickstart/user)
 
-To add `paprika-3-mcp` to Claude, all you need to do is create another entry in the `mcpServers` section of your `claude_desktop_config.json` file:
+To add `paprika-3-mcp` to Claude, all you need to do is create another entry in the `mcpServers` section of your `claude_desktop_config.json` file.
+
+### Option 1: macOS Keychain (recommended — no credentials in config)
+
+Store your password in the macOS Keychain once:
+
+```bash
+security add-generic-password -s paprika-3-mcp -a your@email.com -w
+```
+
+Then configure Claude with only your username in the environment — no password in the file at all:
+
+```json
+{
+  "mcpServers": {
+    "paprika-3": {
+      "command": "paprika-3-mcp",
+      "env": {
+        "PAPRIKA_USERNAME": "your@email.com"
+      }
+    }
+  }
+}
+```
+
+At startup the server looks up the password from the Keychain automatically using the username as the account key.
+
+### Option 2: Environment variables
+
+```json
+{
+  "mcpServers": {
+    "paprika-3": {
+      "command": "paprika-3-mcp",
+      "env": {
+        "PAPRIKA_USERNAME": "your@email.com",
+        "PAPRIKA_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+### Option 3: CLI flags (least preferred — credentials visible in process list)
 
 ```json
 {
