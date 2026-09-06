@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/soggycactus/paprika-3-mcp/internal/paprika"
@@ -94,9 +95,17 @@ func (m *mockClient) DeleteGroceryItem(ctx context.Context, uid string) error {
 }
 
 func newTestServer(mock *mockClient) *Server {
+	// Build an in-memory cache pre-populated from the mock's recipe list.
+	cache := paprika.NewCache(nil, "", slog.Default())
+	for i := range mock.recipes {
+		r := mock.recipes[i] // copy
+		cache.Put(&r)
+	}
 	return &Server{
-		paprika3: mock,
-		logger:   slog.Default(),
+		paprika3:        mock,
+		cache:           cache,
+		logger:          slog.Default(),
+		refreshInterval: 5 * time.Minute,
 	}
 }
 

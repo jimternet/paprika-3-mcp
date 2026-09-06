@@ -14,6 +14,22 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
+func getCachePath() string {
+	switch runtime.GOOS {
+	case "darwin": // macOS
+		return filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "paprika-3-mcp", "recipes.json")
+	case "linux":
+		if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
+			return filepath.Join(xdg, "paprika-3-mcp", "recipes.json")
+		}
+		return filepath.Join(os.Getenv("HOME"), ".cache", "paprika-3-mcp", "recipes.json")
+	case "windows":
+		return filepath.Join(os.Getenv("LOCALAPPDATA"), "paprika-3-mcp", "recipes.json")
+	default:
+		return filepath.Join(os.TempDir(), "paprika-3-mcp", "recipes.json")
+	}
+}
+
 var version = "dev" // set during build with -ldflags
 
 func getLogFilePath() string {
@@ -35,6 +51,8 @@ func main() {
 	password := flag.String("password", "", "Paprika 3 password. Falls back to $PAPRIKA_PASSWORD.")
 	rateLimitMs := flag.Int("rate-limit-ms", 250, "Minimum milliseconds between API requests. Falls back to $PAPRIKA_RATE_LIMIT_MS.")
 	showVersion := flag.Bool("version", false, "Print version and exit")
+	cachePath := flag.String("cache-path", "", "Path to the recipe cache file. Falls back to platform default.")
+	refreshInterval := flag.String("refresh-interval", "", "Background cache refresh interval (Go duration string, e.g. 5m). Falls back to $PAPRIKA_REFRESH_INTERVAL or 5m.")
 	flag.Parse()
 
 	if *showVersion {
@@ -55,6 +73,24 @@ func main() {
 			}
 		}
 	}
+	if *cachePath == "" {
+		*cachePath = getCachePath()
+	}
+
+	// Resolve refresh interval: flag > env > default.
+	var parsedRefreshInterval time.Duration
+	if *refreshInterval == "" {
+		*refreshInterval = os.Getenv("PAPRIKA_REFRESH_INTERVAL")
+	}
+	if *refreshInterval != "" {
+		d, err := time.ParseDuration(*refreshInterval)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid --refresh-interval value %q: %v\n", *refreshInterval, err)
+			os.Exit(1)
+		}
+		parsedRefreshInterval = d
+	}
+	// 0 means "use default" inside NewServer.
 
 	if *username == "" || *password == "" {
 		fmt.Fprintln(os.Stderr, "username and password are required (set --username/--password flags or PAPRIKA_USERNAME/PAPRIKA_PASSWORD env vars)")
@@ -82,13 +118,15 @@ func main() {
 		Password:          *password,
 		Logger:            logger,
 		RateLimitInterval: rateLimitInterval,
+		CachePath:         *cachePath,
+		RefreshInterval:   parsedRefreshInterval,
 	})
 	if err != nil {
 		logger.Error("failed to start paprika-3-mcp server", "err", err)
 		os.Exit(1)
 	}
 
-	logger.Info("starting mcp server", "version", version)
+	logger.Info("starting mcp server", "version", version, "cache_path", *cachePath)
 
 	s.Start()
 }
