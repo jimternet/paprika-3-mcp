@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/soggycactus/paprika-3-mcp/internal/mcpserver"
+	"github.com/jimternet/paprika-3-mcp/internal/mcpserver"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
