@@ -10,7 +10,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/soggycactus/paprika-3-mcp/internal/paprika"
+	"github.com/jimternet/paprika-3-mcp/internal/paprika"
 )
 
 // PaprikaClient defines the interface for interacting with the Paprika API.

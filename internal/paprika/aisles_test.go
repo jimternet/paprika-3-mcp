@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/soggycactus/paprika-3-mcp/internal/paprika"
+	"github.com/jimternet/paprika-3-mcp/internal/paprika"
 	"github.com/stretchr/testify/assert"
 )
 

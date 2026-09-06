@@ -1,4 +1,4 @@
-module github.com/soggycactus/paprika-3-mcp
+module github.com/jimternet/paprika-3-mcp
 
 go 1.25.5
 
