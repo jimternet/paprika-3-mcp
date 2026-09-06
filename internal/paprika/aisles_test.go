@@ -126,6 +126,18 @@ func TestLookupIngredientAisle(t *testing.T) {
 
 		// Tier 3: default keyword table
 		{
+			name:       "plural ingredient matches singular keyword",
+			input:      "bananas",
+			wantAisle:  "Produce",
+			wantReason: "default", // "bananas" not in fixture; variant "banana" matches keyword
+		},
+		{
+			name:       "plural tomatoes matches tomato keyword",
+			input:      "3 cans diced tomatoes",
+			wantAisle:  "Canned Goods",
+			wantReason: "default",
+		},
+		{
 			name:       "frozen pizza keyword",
 			input:      "frozen pizza",
 			wantAisle:  "Frozen",

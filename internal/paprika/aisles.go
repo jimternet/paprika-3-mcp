@@ -140,10 +140,16 @@ func (c *Cache) LookupIngredientAisle(name string) (aisleName, reason string) {
 	}
 
 	// Tier 3: built-in keyword table.
+	// Try the normalized name and all its singular/plural variants so that
+	// "apples" matches the keyword "apple", "tomatoes" matches "tomato", etc.
+	tier3Candidates := append([]string{normalized}, singularPluralVariants(normalized)...)
 	for _, kw := range defaultAisleKeywords {
-		if wordMatch(normalized, kw.keyword) {
-			if n, ok := resolveAisleName(kw.aisle); ok {
-				return n, "default"
+		for _, candidate := range tier3Candidates {
+			if wordMatch(candidate, kw.keyword) {
+				if n, ok := resolveAisleName(kw.aisle); ok {
+					return n, "default"
+				}
+				break // aisle name not in user's list; try next keyword
 			}
 		}
 	}
