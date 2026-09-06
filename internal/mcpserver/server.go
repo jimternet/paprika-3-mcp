@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -267,51 +266,26 @@ func (s *Server) registerCachedResources() {
 
 func (s *Server) createRecipe(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
-	name, ok := req.Params.Arguments["name"].(string)
-	if !ok || len(name) == 0 {
-		return nil, errors.New("name is required")
+	name, err := req.RequireString("name")
+	if err != nil || len(name) == 0 {
+		return mcp.NewToolResultError("name is required"), nil
 	}
-	ingredients, ok := req.Params.Arguments["ingredients"].(string)
-	if !ok || len(ingredients) == 0 {
-		return nil, errors.New("ingredients are required")
+	ingredients, err := req.RequireString("ingredients")
+	if err != nil || len(ingredients) == 0 {
+		return mcp.NewToolResultError("ingredients are required"), nil
 	}
-	directions, ok := req.Params.Arguments["directions"].(string)
-	if !ok || len(directions) == 0 {
-		return nil, errors.New("directions are required")
+	directions, err := req.RequireString("directions")
+	if err != nil || len(directions) == 0 {
+		return mcp.NewToolResultError("directions are required"), nil
 	}
-	// Handle optional string fields safely
-	servings := ""
-	if val, ok := req.Params.Arguments["servings"].(string); ok {
-		servings = val
-	}
-	prepTime := ""
-	if val, ok := req.Params.Arguments["prep_time"].(string); ok {
-		prepTime = val
-	}
-	cookTime := ""
-	if val, ok := req.Params.Arguments["cook_time"].(string); ok {
-		cookTime = val
-	}
-	description := ""
-	if val, ok := req.Params.Arguments["description"].(string); ok {
-		description = val
-	}
-	notes := ""
-	if val, ok := req.Params.Arguments["notes"].(string); ok {
-		notes = val
-	}
-	difficulty := ""
-	if val, ok := req.Params.Arguments["difficulty"].(string); ok {
-		difficulty = val
-	}
-	source := ""
-	if val, ok := req.Params.Arguments["source"].(string); ok {
-		source = val
-	}
-	sourceURL := ""
-	if val, ok := req.Params.Arguments["source_url"].(string); ok {
-		sourceURL = val
-	}
+	servings := req.GetString("servings", "")
+	prepTime := req.GetString("prep_time", "")
+	cookTime := req.GetString("cook_time", "")
+	description := req.GetString("description", "")
+	notes := req.GetString("notes", "")
+	difficulty := req.GetString("difficulty", "")
+	source := req.GetString("source", "")
+	sourceURL := req.GetString("source_url", "")
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -346,9 +320,9 @@ func (s *Server) createRecipe(ctx context.Context, req mcp.CallToolRequest) (*mc
 
 func (s *Server) updateRecipe(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
-	uid, ok := req.Params.Arguments["uid"].(string)
-	if !ok || len(uid) == 0 {
-		return nil, errors.New("uid is required")
+	uid, err := req.RequireString("uid")
+	if err != nil || len(uid) == 0 {
+		return mcp.NewToolResultError("uid is required"), nil
 	}
 
 	// Load the existing recipe from cache; fall back to the live API.
@@ -356,10 +330,9 @@ func (s *Server) updateRecipe(ctx context.Context, req mcp.CallToolRequest) (*mc
 	if !found {
 		fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		var err error
 		existing, err = s.paprika3.GetRecipe(fetchCtx, uid)
 		if err != nil {
-			return nil, errors.New("recipe not found — try running refresh_recipes first")
+			return mcp.NewToolResultError("recipe not found — try running refresh_recipes first"), nil
 		}
 	}
 
@@ -367,37 +340,37 @@ func (s *Server) updateRecipe(ctx context.Context, req mcp.CallToolRequest) (*mc
 	// (non-empty string supplied by the caller).
 	merged := *existing
 
-	if val, ok := req.Params.Arguments["name"].(string); ok && val != "" {
+	if val := req.GetString("name", ""); val != "" {
 		merged.Name = val
 	}
-	if val, ok := req.Params.Arguments["ingredients"].(string); ok && val != "" {
+	if val := req.GetString("ingredients", ""); val != "" {
 		merged.Ingredients = val
 	}
-	if val, ok := req.Params.Arguments["directions"].(string); ok && val != "" {
+	if val := req.GetString("directions", ""); val != "" {
 		merged.Directions = val
 	}
-	if val, ok := req.Params.Arguments["description"].(string); ok && val != "" {
+	if val := req.GetString("description", ""); val != "" {
 		merged.Description = val
 	}
-	if val, ok := req.Params.Arguments["notes"].(string); ok && val != "" {
+	if val := req.GetString("notes", ""); val != "" {
 		merged.Notes = val
 	}
-	if val, ok := req.Params.Arguments["servings"].(string); ok && val != "" {
+	if val := req.GetString("servings", ""); val != "" {
 		merged.Servings = val
 	}
-	if val, ok := req.Params.Arguments["prep_time"].(string); ok && val != "" {
+	if val := req.GetString("prep_time", ""); val != "" {
 		merged.PrepTime = val
 	}
-	if val, ok := req.Params.Arguments["cook_time"].(string); ok && val != "" {
+	if val := req.GetString("cook_time", ""); val != "" {
 		merged.CookTime = val
 	}
-	if val, ok := req.Params.Arguments["difficulty"].(string); ok && val != "" {
+	if val := req.GetString("difficulty", ""); val != "" {
 		merged.Difficulty = val
 	}
-	if val, ok := req.Params.Arguments["source"].(string); ok && val != "" {
+	if val := req.GetString("source", ""); val != "" {
 		merged.Source = val
 	}
-	if val, ok := req.Params.Arguments["source_url"].(string); ok && val != "" {
+	if val := req.GetString("source_url", ""); val != "" {
 		merged.SourceURL = val
 	}
 
@@ -453,15 +426,8 @@ func formatRecipeList(recipes []paprika.Recipe) string {
 func (s *Server) listRecipes(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
 
-	limit := 0
-	if val, ok := req.Params.Arguments["limit"].(float64); ok {
-		limit = int(val)
-	}
-
-	category := ""
-	if val, ok := req.Params.Arguments["category"].(string); ok {
-		category = strings.TrimSpace(val)
-	}
+	limit := req.GetInt("limit", 0)
+	category := strings.TrimSpace(req.GetString("category", ""))
 
 	// Use cache; List() already returns sorted, non-trashed recipes.
 	recipePointers := s.cache.List()
@@ -499,23 +465,13 @@ func (s *Server) listRecipes(ctx context.Context, req mcp.CallToolRequest) (*mcp
 func (s *Server) searchRecipes(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
 
-	query := ""
-	if val, ok := req.Params.Arguments["query"].(string); ok {
-		query = strings.TrimSpace(val)
-	}
+	query := strings.TrimSpace(req.GetString("query", ""))
 	if query == "" {
-		return nil, errors.New("query is required — use list_recipes to browse all recipes")
+		return mcp.NewToolResultError("query is required — use list_recipes to browse all recipes"), nil
 	}
 
-	limit := 10
-	if val, ok := req.Params.Arguments["limit"].(float64); ok {
-		limit = int(val)
-	}
-
-	category := ""
-	if val, ok := req.Params.Arguments["category"].(string); ok {
-		category = strings.TrimSpace(val)
-	}
+	limit := req.GetInt("limit", 10)
+	category := strings.TrimSpace(req.GetString("category", ""))
 
 	// Use cache Search which handles lowercasing, word splitting, and sorting.
 	// Search with unlimited results when category filtering is needed, then apply the category filter.
@@ -558,32 +514,17 @@ func (s *Server) addGroceryItem(ctx context.Context, req mcp.CallToolRequest) (*
 	start := time.Now()
 
 	// Get required parameter
-	ingredient, ok := req.Params.Arguments["ingredient"].(string)
-	if !ok || ingredient == "" {
-		return nil, errors.New("ingredient is required")
+	ingredient, err := req.RequireString("ingredient")
+	if err != nil || ingredient == "" {
+		return mcp.NewToolResultError("ingredient is required"), nil
 	}
 
 	// Get optional parameters
-	listUID := ""
-	if val, ok := req.Params.Arguments["list_uid"].(string); ok {
-		listUID = strings.TrimSpace(val)
-	}
-	aisle := ""
-	if val, ok := req.Params.Arguments["aisle"].(string); ok {
-		aisle = strings.TrimSpace(val)
-	}
-	quantity := ""
-	if val, ok := req.Params.Arguments["quantity"].(string); ok {
-		quantity = strings.TrimSpace(val)
-	}
-	recipe := ""
-	if val, ok := req.Params.Arguments["recipe"].(string); ok {
-		recipe = strings.TrimSpace(val)
-	}
-	instruction := ""
-	if val, ok := req.Params.Arguments["instruction"].(string); ok {
-		instruction = strings.TrimSpace(val)
-	}
+	listUID := strings.TrimSpace(req.GetString("list_uid", ""))
+	aisle := strings.TrimSpace(req.GetString("aisle", ""))
+	quantity := strings.TrimSpace(req.GetString("quantity", ""))
+	recipe := strings.TrimSpace(req.GetString("recipe", ""))
+	instruction := strings.TrimSpace(req.GetString("instruction", ""))
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -605,7 +546,7 @@ func (s *Server) addGroceryItem(ctx context.Context, req mcp.CallToolRequest) (*
 			}
 		}
 		if listUID == "" {
-			return nil, errors.New("no default grocery list found; pass an explicit list_uid")
+			return mcp.NewToolResultError("no default grocery list found; pass an explicit list_uid"), nil
 		}
 	}
 
@@ -658,9 +599,9 @@ func (s *Server) removeGroceryItem(ctx context.Context, req mcp.CallToolRequest)
 	start := time.Now()
 
 	// Get item name parameter
-	itemName, ok := req.Params.Arguments["item_name"].(string)
-	if !ok || itemName == "" {
-		return nil, errors.New("item_name is required")
+	itemName, err := req.RequireString("item_name")
+	if err != nil || itemName == "" {
+		return mcp.NewToolResultError("item_name is required"), nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -725,9 +666,9 @@ func (s *Server) removeGroceryItem(ctx context.Context, req mcp.CallToolRequest)
 func (s *Server) getRecipe(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
 
-	uid, ok := req.Params.Arguments["uid"].(string)
-	if !ok || uid == "" {
-		return nil, errors.New("uid is required")
+	uid, err := req.RequireString("uid")
+	if err != nil || uid == "" {
+		return mcp.NewToolResultError("uid is required"), nil
 	}
 
 	// Try cache first; fall back to live API on miss.
@@ -861,9 +802,9 @@ func (s *Server) refreshRecipes(ctx context.Context, req mcp.CallToolRequest) (*
 func (s *Server) deleteRecipe(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
 
-	uid, ok := req.Params.Arguments["uid"].(string)
-	if !ok || uid == "" {
-		return nil, errors.New("uid is required")
+	uid, err := req.RequireString("uid")
+	if err != nil || uid == "" {
+		return mcp.NewToolResultError("uid is required"), nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -897,24 +838,17 @@ func (s *Server) addMealToPlan(ctx context.Context, req mcp.CallToolRequest) (*m
 	start := time.Now()
 
 	// Get parameters
-	date, ok := req.Params.Arguments["date"].(string)
-	if !ok || date == "" {
-		return nil, errors.New("date is required")
+	date, err := req.RequireString("date")
+	if err != nil || date == "" {
+		return mcp.NewToolResultError("date is required"), nil
 	}
-	mealName, ok := req.Params.Arguments["meal_name"].(string)
-	if !ok || mealName == "" {
-		return nil, errors.New("meal_name is required")
-	}
-
-	mealType := paprika.MealTypeDinner
-	if val, ok := req.Params.Arguments["meal_type"].(float64); ok {
-		mealType = int(val)
+	mealName, err := req.RequireString("meal_name")
+	if err != nil || mealName == "" {
+		return mcp.NewToolResultError("meal_name is required"), nil
 	}
 
-	recipeUID := ""
-	if val, ok := req.Params.Arguments["recipe_uid"].(string); ok {
-		recipeUID = strings.TrimSpace(val)
-	}
+	mealType := req.GetInt("meal_type", paprika.MealTypeDinner)
+	recipeUID := strings.TrimSpace(req.GetString("recipe_uid", ""))
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -964,17 +898,16 @@ func (s *Server) removeMealFromPlan(ctx context.Context, req mcp.CallToolRequest
 	start := time.Now()
 
 	// Get meal UID parameter
-	mealUID, ok := req.Params.Arguments["meal_uid"].(string)
-	if !ok || mealUID == "" {
-		return nil, errors.New("meal_uid is required")
+	mealUID, err := req.RequireString("meal_uid")
+	if err != nil || mealUID == "" {
+		return mcp.NewToolResultError("meal_uid is required"), nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	// Delete the meal plan entry
-	err := s.paprika3.DeleteMealPlan(ctx, mealUID)
-	if err != nil {
+	if err = s.paprika3.DeleteMealPlan(ctx, mealUID); err != nil {
 		return nil, fmt.Errorf("failed to remove meal from plan: %w", err)
 	}
 
@@ -994,14 +927,8 @@ func (s *Server) listMealPlan(ctx context.Context, req mcp.CallToolRequest) (*mc
 	start := time.Now()
 
 	// Get date filters if provided
-	startDate := ""
-	if val, ok := req.Params.Arguments["start_date"].(string); ok {
-		startDate = strings.TrimSpace(val)
-	}
-	endDate := ""
-	if val, ok := req.Params.Arguments["end_date"].(string); ok {
-		endDate = strings.TrimSpace(val)
-	}
+	startDate := strings.TrimSpace(req.GetString("start_date", ""))
+	endDate := strings.TrimSpace(req.GetString("end_date", ""))
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -1121,10 +1048,7 @@ func (s *Server) listGroceries(ctx context.Context, req mcp.CallToolRequest) (*m
 	start := time.Now()
 
 	// Get filter parameter
-	filter := "all"
-	if val, ok := req.Params.Arguments["filter"].(string); ok {
-		filter = strings.ToLower(strings.TrimSpace(val))
-	}
+	filter := strings.ToLower(strings.TrimSpace(req.GetString("filter", "all")))
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

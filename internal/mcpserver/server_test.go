@@ -111,13 +111,7 @@ func newTestServer(mock *mockClient) *Server {
 
 func callToolRequest(args map[string]interface{}) mcp.CallToolRequest {
 	return mcp.CallToolRequest{
-		Params: struct {
-			Name      string                 `json:"name"`
-			Arguments map[string]interface{} `json:"arguments,omitempty"`
-			Meta      *struct {
-				ProgressToken mcp.ProgressToken `json:"progressToken,omitempty"`
-			} `json:"_meta,omitempty"`
-		}{
+		Params: mcp.CallToolParams{
 			Arguments: args,
 		},
 	}
@@ -327,10 +321,12 @@ func TestSearchRecipes(t *testing.T) {
 	s := newTestServer(mock)
 	ctx := context.Background()
 
-	t.Run("empty query returns error", func(t *testing.T) {
-		_, err := s.searchRecipes(ctx, callToolRequest(map[string]interface{}{}))
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "query is required")
+	t.Run("empty query returns error result", func(t *testing.T) {
+		result, err := s.searchRecipes(ctx, callToolRequest(map[string]interface{}{}))
+		require.NoError(t, err)
+		require.True(t, result.IsError, "expected IsError to be true")
+		text := result.Content[0].(mcp.TextContent).Text
+		assert.Contains(t, text, "query is required")
 	})
 
 	t.Run("keyword search matches name", func(t *testing.T) {
@@ -632,11 +628,13 @@ func TestUpdateRecipe_NotFoundReturnsError(t *testing.T) {
 	s := newTestServer(mock)
 	ctx := context.Background()
 
-	_, err := s.updateRecipe(ctx, callToolRequest(map[string]interface{}{
+	result, err := s.updateRecipe(ctx, callToolRequest(map[string]interface{}{
 		"uid": "NONEXISTENT-UID",
 	}))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "recipe not found")
+	require.NoError(t, err)
+	require.True(t, result.IsError, "expected IsError to be true")
+	text := result.Content[0].(mcp.TextContent).Text
+	assert.Contains(t, text, "recipe not found")
 }
 
 func TestListRecipes_CategoryFilter(t *testing.T) {
@@ -758,10 +756,12 @@ func TestDeleteRecipe(t *testing.T) {
 		assert.Equal(t, []string{"recipe-1"}, mock.deletedRecipeUIDs)
 	})
 
-	t.Run("returns error for missing UID", func(t *testing.T) {
-		_, err := s.deleteRecipe(ctx, callToolRequest(map[string]interface{}{}))
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "uid is required")
+	t.Run("returns error result for missing UID", func(t *testing.T) {
+		result, err := s.deleteRecipe(ctx, callToolRequest(map[string]interface{}{}))
+		require.NoError(t, err)
+		require.True(t, result.IsError, "expected IsError to be true")
+		text := result.Content[0].(mcp.TextContent).Text
+		assert.Contains(t, text, "uid is required")
 	})
 
 	t.Run("returns error for unknown UID", func(t *testing.T) {
