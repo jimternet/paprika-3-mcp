@@ -50,10 +50,10 @@ changelog:
 brews:
   - name: paprika-3-mcp
     repository:
-      owner: soggycactus
+      owner: jimternet
       name: homebrew-tap
-    homepage: https://github.com/soggycactus/paprika-3-mcp
-    description: MCP Server for creating/editing recipes in Paprika 3 with natural language 
+    homepage: https://github.com/jimternet/paprika-3-mcp
+    description: MCP Server for creating/editing recipes in Paprika 3 with natural language
     license: MIT
     directory: Formula
     test: |
@@ -61,5 +61,5 @@ brews:
     install: |
       bin.install "paprika-3-mcp"
     commit_author:
-      name: Lucas Stephens
-      email: lucas@lucastephens.com
+      name: Jim Beyers
+      email: jamesbeyers@gmail.com
