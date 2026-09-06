@@ -14,6 +14,35 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
+// resolveCredentials applies the credential precedence chain:
+//  1. CLI flags (already populated by flag.Parse)
+//  2. Environment variables
+//  3. macOS Keychain (darwin only; keychainPassword is a no-op elsewhere)
+//
+// logger may be nil during early startup; pass one only after it is
+// initialised. The password is never included in any log message.
+func resolveCredentials(username, password *string, logger *slog.Logger) {
+	if *username == "" {
+		*username = os.Getenv("PAPRIKA_USERNAME")
+	}
+	if *password == "" {
+		*password = os.Getenv("PAPRIKA_PASSWORD")
+	}
+
+	// Keychain fallback: only attempted when username is known and password
+	// is still missing.
+	if *username != "" && *password == "" {
+		pw, err := keychainPassword(*username)
+		if err != nil {
+			if logger != nil {
+				logger.Debug("keychain lookup failed", "username", *username, "err", err)
+			}
+		} else if pw != "" {
+			*password = pw
+		}
+	}
+}
+
 func getCachePath() string {
 	switch runtime.GOOS {
 	case "darwin": // macOS
@@ -60,12 +89,12 @@ func main() {
 		os.Exit(0)
 	}
 
-	if *username == "" {
-		*username = os.Getenv("PAPRIKA_USERNAME")
-	}
-	if *password == "" {
-		*password = os.Getenv("PAPRIKA_PASSWORD")
-	}
+	// Resolve credentials: flags > env vars > Keychain.
+	// Logger not yet initialised here; pass nil so Keychain debug messages
+	// go nowhere rather than panic. They will be visible once the file
+	// logger is set up, but a failed Keychain lookup at startup is not fatal.
+	resolveCredentials(username, password, nil)
+
 	if *rateLimitMs == 250 {
 		if envVal := os.Getenv("PAPRIKA_RATE_LIMIT_MS"); envVal != "" {
 			if ms, err := strconv.Atoi(envVal); err == nil && ms > 0 {
@@ -93,7 +122,7 @@ func main() {
 	// 0 means "use default" inside NewServer.
 
 	if *username == "" || *password == "" {
-		fmt.Fprintln(os.Stderr, "username and password are required (set --username/--password flags or PAPRIKA_USERNAME/PAPRIKA_PASSWORD env vars)")
+		fmt.Fprintln(os.Stderr, "username and password are required (set --username/--password flags, PAPRIKA_USERNAME/PAPRIKA_PASSWORD env vars, or store the password in the macOS Keychain with: security add-generic-password -s paprika-3-mcp -a <username> -w)")
 		os.Exit(1)
 	}
 

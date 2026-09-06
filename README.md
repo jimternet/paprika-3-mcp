@@ -100,7 +100,50 @@ paprika-3-mcp version v0.1.0
 
 If you haven't setup MCP before, [first read more about how to install Claude Desktop client & configure an MCP server.](https://modelcontextprotocol.io/quickstart/user)
 
-To add `paprika-3-mcp` to Claude, all you need to do is create another entry in the `mcpServers` section of your `claude_desktop_config.json` file:
+To add `paprika-3-mcp` to Claude, all you need to do is create another entry in the `mcpServers` section of your `claude_desktop_config.json` file.
+
+### Option 1: macOS Keychain (recommended — no credentials in config)
+
+Store your password in the macOS Keychain once:
+
+```bash
+security add-generic-password -s paprika-3-mcp -a your@email.com -w
+```
+
+Then configure Claude with only your username in the environment — no password in the file at all:
+
+```json
+{
+  "mcpServers": {
+    "paprika-3": {
+      "command": "paprika-3-mcp",
+      "env": {
+        "PAPRIKA_USERNAME": "your@email.com"
+      }
+    }
+  }
+}
+```
+
+At startup the server looks up the password from the Keychain automatically using the username as the account key.
+
+### Option 2: Environment variables
+
+```json
+{
+  "mcpServers": {
+    "paprika-3": {
+      "command": "paprika-3-mcp",
+      "env": {
+        "PAPRIKA_USERNAME": "your@email.com",
+        "PAPRIKA_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+### Option 3: CLI flags (least preferred — credentials visible in process list)
 
 ```json
 {
