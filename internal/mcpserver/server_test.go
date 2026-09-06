@@ -479,6 +479,264 @@ func TestListGroceryLists_FiltersDeleted(t *testing.T) {
 	assert.NotContains(t, text, "Old List")
 }
 
+func TestListCategories(t *testing.T) {
+	mock := &mockClient{
+		recipes: []paprika.Recipe{
+			{UID: "1", Name: "Chicken Tikka Masala", Categories: []string{"Indian", "Dinner"}},
+			{UID: "2", Name: "Spaghetti Bolognese", Categories: []string{"Italian", "Dinner"}},
+			{UID: "3", Name: "Caesar Salad", Categories: []string{"Salads", "indian"}}, // lowercase duplicate of "Indian"
+			{UID: "4", Name: "Trashed Recipe", Categories: []string{"Italian"}, InTrash: true},
+		},
+	}
+	s := newTestServer(mock)
+	ctx := context.Background()
+
+	t.Run("lists categories with counts", func(t *testing.T) {
+		result, err := s.listCategories(ctx, callToolRequest(map[string]interface{}{}))
+		require.NoError(t, err)
+		text := result.Content[0].(mcp.TextContent).Text
+		// Dinner should appear (2 recipes), Italian should appear (1 non-trashed recipe),
+		// Indian/indian should be deduped and appear as 2 recipes, Salads as 1.
+		assert.Contains(t, text, "Dinner (2 recipes)")
+		assert.Contains(t, text, "Italian (1 recipe)")
+		// Case-insensitive dedup: "Indian" and "indian" → count of 2
+		assert.Contains(t, text, "2 recipe")
+		// Trashed recipe's category should not inflate counts
+		assert.NotContains(t, text, "Italian (2 recipes)")
+	})
+
+	t.Run("returns message when no categories", func(t *testing.T) {
+		emptyMock := &mockClient{
+			recipes: []paprika.Recipe{
+				{UID: "1", Name: "Plain Recipe", Categories: []string{}},
+			},
+		}
+		s2 := newTestServer(emptyMock)
+		result, err := s2.listCategories(ctx, callToolRequest(map[string]interface{}{}))
+		require.NoError(t, err)
+		text := result.Content[0].(mcp.TextContent).Text
+		assert.Contains(t, text, "No categories found")
+	})
+
+	t.Run("categories are sorted alphabetically", func(t *testing.T) {
+		result, err := s.listCategories(ctx, callToolRequest(map[string]interface{}{}))
+		require.NoError(t, err)
+		text := result.Content[0].(mcp.TextContent).Text
+		dinnerIdx := strings.Index(text, "Dinner")
+		italianIdx := strings.Index(text, "Italian")
+		require.NotEqual(t, -1, dinnerIdx)
+		require.NotEqual(t, -1, italianIdx)
+		assert.Less(t, dinnerIdx, italianIdx)
+	})
+}
+
+func TestRefreshRecipes(t *testing.T) {
+	// refreshRecipes calls cache.Refresh which requires the cache to have a real *paprika.Client.
+	// Since we can't inject a mock there, we test the tool indirectly by verifying that
+	// when the underlying refresh succeeds (cache already loaded with data), the tool
+	// returns the expected format. We test the error path when the client is nil.
+	t.Run("returns error when cache client is nil", func(t *testing.T) {
+		mock := &mockClient{}
+		cache := paprika.NewCache(nil, "", slog.Default())
+		s := &Server{
+			paprika3:        mock,
+			cache:           cache,
+			logger:          slog.Default(),
+			refreshInterval: 5 * time.Minute,
+		}
+		ctx := context.Background()
+		_, err := s.refreshRecipes(ctx, callToolRequest(map[string]interface{}{}))
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "refresh failed")
+	})
+}
+
+func TestUpdateRecipe_MergePreservesFields(t *testing.T) {
+	original := paprika.Recipe{
+		UID:         "RECIPE-UID-1",
+		Name:        "Original Name",
+		Ingredients: "original ingredients",
+		Directions:  "original directions",
+		Description: "original description",
+		Notes:       "original notes",
+		Source:      "original source",
+		SourceURL:   "https://original.example.com",
+		Categories:  []string{"Italian", "Dinner"},
+		Rating:      4,
+		Servings:    "4",
+		PrepTime:    "10 min",
+		CookTime:    "30 min",
+		Difficulty:  "Medium",
+	}
+
+	var savedRecipe *paprika.Recipe
+	mock := &mockClient{
+		recipes: []paprika.Recipe{original},
+	}
+	// Override SaveRecipe to capture what was sent.
+	s := newTestServer(mock)
+	ctx := context.Background()
+
+	// Update only notes; all other fields should be preserved.
+	result, err := s.updateRecipe(ctx, callToolRequest(map[string]interface{}{
+		"uid":   "RECIPE-UID-1",
+		"notes": "updated notes",
+	}))
+	require.NoError(t, err)
+	_ = result
+
+	// The saved recipe (returned by mock SaveRecipe) is what gets stored in cache.
+	saved, found := s.cache.Get("RECIPE-UID-1")
+	require.True(t, found)
+	savedRecipe = saved
+
+	assert.Equal(t, "Original Name", savedRecipe.Name, "name should be preserved")
+	assert.Equal(t, "original ingredients", savedRecipe.Ingredients, "ingredients should be preserved")
+	assert.Equal(t, "original directions", savedRecipe.Directions, "directions should be preserved")
+	assert.Equal(t, "original description", savedRecipe.Description, "description should be preserved")
+	assert.Equal(t, "updated notes", savedRecipe.Notes, "notes should be updated")
+	assert.Equal(t, "original source", savedRecipe.Source, "source should be preserved")
+	assert.Equal(t, "https://original.example.com", savedRecipe.SourceURL, "source_url should be preserved")
+	assert.Equal(t, []string{"Italian", "Dinner"}, savedRecipe.Categories, "categories should be preserved")
+	assert.Equal(t, 4, savedRecipe.Rating, "rating should be preserved")
+	assert.Equal(t, "4", savedRecipe.Servings, "servings should be preserved")
+}
+
+func TestUpdateRecipe_FallsBackToAPI(t *testing.T) {
+	mock := &mockClient{
+		recipes: []paprika.Recipe{
+			{UID: "RECIPE-API-1", Name: "API Recipe", Ingredients: "things", Directions: "do stuff"},
+		},
+	}
+	// Build a server with an EMPTY cache to force the API fallback path.
+	cache := paprika.NewCache(nil, "", slog.Default())
+	s := &Server{
+		paprika3:        mock,
+		cache:           cache,
+		logger:          slog.Default(),
+		refreshInterval: 5 * time.Minute,
+	}
+	ctx := context.Background()
+
+	result, err := s.updateRecipe(ctx, callToolRequest(map[string]interface{}{
+		"uid":  "RECIPE-API-1",
+		"name": "Updated via API Fallback",
+	}))
+	require.NoError(t, err)
+	text := result.Content[0].(mcp.TextContent).Text
+	assert.Contains(t, text, "Updated via API Fallback")
+}
+
+func TestUpdateRecipe_NotFoundReturnsError(t *testing.T) {
+	mock := &mockClient{recipes: []paprika.Recipe{}}
+	s := newTestServer(mock)
+	ctx := context.Background()
+
+	_, err := s.updateRecipe(ctx, callToolRequest(map[string]interface{}{
+		"uid": "NONEXISTENT-UID",
+	}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "recipe not found")
+}
+
+func TestListRecipes_CategoryFilter(t *testing.T) {
+	mock := &mockClient{
+		recipes: []paprika.Recipe{
+			{UID: "1", Name: "Chicken Tikka Masala", Categories: []string{"Indian", "Dinner"}},
+			{UID: "2", Name: "Spaghetti Bolognese", Categories: []string{"Italian", "Dinner"}},
+			{UID: "3", Name: "Caesar Salad", Categories: []string{"Salads"}},
+		},
+	}
+	s := newTestServer(mock)
+	ctx := context.Background()
+
+	t.Run("filters by category case-insensitively", func(t *testing.T) {
+		result, err := s.listRecipes(ctx, callToolRequest(map[string]interface{}{
+			"category": "dinner",
+		}))
+		require.NoError(t, err)
+		text := result.Content[0].(mcp.TextContent).Text
+		assert.Contains(t, text, "Chicken Tikka Masala")
+		assert.Contains(t, text, "Spaghetti Bolognese")
+		assert.NotContains(t, text, "Caesar Salad")
+	})
+
+	t.Run("no filter returns all recipes", func(t *testing.T) {
+		result, err := s.listRecipes(ctx, callToolRequest(map[string]interface{}{}))
+		require.NoError(t, err)
+		text := result.Content[0].(mcp.TextContent).Text
+		assert.Contains(t, text, "Chicken Tikka Masala")
+		assert.Contains(t, text, "Spaghetti Bolognese")
+		assert.Contains(t, text, "Caesar Salad")
+	})
+
+	t.Run("nonexistent category returns no recipes", func(t *testing.T) {
+		result, err := s.listRecipes(ctx, callToolRequest(map[string]interface{}{
+			"category": "Desserts",
+		}))
+		require.NoError(t, err)
+		text := result.Content[0].(mcp.TextContent).Text
+		assert.Contains(t, text, "No recipes found")
+	})
+}
+
+func TestSearchRecipes_CategoryFilter(t *testing.T) {
+	mock := &mockClient{
+		recipes: []paprika.Recipe{
+			{UID: "1", Name: "Chicken Tikka Masala", Ingredients: "chicken, yogurt", Categories: []string{"Indian"}},
+			{UID: "2", Name: "Chicken Parmesan", Ingredients: "chicken, parmesan", Categories: []string{"Italian"}},
+		},
+	}
+	s := newTestServer(mock)
+	ctx := context.Background()
+
+	t.Run("category filter applied after keyword search", func(t *testing.T) {
+		result, err := s.searchRecipes(ctx, callToolRequest(map[string]interface{}{
+			"query":    "chicken",
+			"category": "Indian",
+		}))
+		require.NoError(t, err)
+		text := result.Content[0].(mcp.TextContent).Text
+		assert.Contains(t, text, "Chicken Tikka Masala")
+		assert.NotContains(t, text, "Chicken Parmesan")
+	})
+}
+
+func TestGetRecipe_MetadataBlock(t *testing.T) {
+	mock := &mockClient{
+		recipes: []paprika.Recipe{
+			{
+				UID:        "RECIPE-META-1",
+				Name:       "Test Recipe",
+				Ingredients: "flour",
+				Directions:  "mix",
+				Categories: []string{"Baking"},
+				Source:     "Grandma",
+				SourceURL:  "https://example.com",
+				Rating:     5,
+				Created:    "2024-01-01 00:00:00",
+			},
+		},
+	}
+	s := newTestServer(mock)
+	ctx := context.Background()
+
+	result, err := s.getRecipe(ctx, callToolRequest(map[string]interface{}{
+		"uid": "RECIPE-META-1",
+	}))
+	require.NoError(t, err)
+	text := result.Content[0].(mcp.TextContent).Text
+
+	assert.Contains(t, text, "RECIPE-META-1")
+	assert.Contains(t, text, "Baking")
+	assert.Contains(t, text, "Grandma")
+	assert.Contains(t, text, "https://example.com")
+	assert.Contains(t, text, "5")
+	assert.Contains(t, text, "2024-01-01")
+	// Should have the separator markers
+	assert.Contains(t, text, "---")
+}
+
 func TestDeleteRecipe(t *testing.T) {
 	mock := &mockClient{
 		recipes: []paprika.Recipe{

@@ -3,6 +3,7 @@ package paprika
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -87,6 +88,10 @@ func (c *Cache) save() error {
 // It lists all recipes, fetches any that are new or have changed hashes,
 // prunes deleted entries, then persists the updated cache.
 func (c *Cache) Refresh(ctx context.Context) error {
+	if c.client == nil {
+		return errors.New("cache has no client configured")
+	}
+
 	start := time.Now()
 
 	list, err := c.client.ListRecipes(ctx)
