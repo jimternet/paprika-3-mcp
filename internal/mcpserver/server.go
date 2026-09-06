@@ -32,14 +32,15 @@ type PaprikaClient interface {
 }
 
 type NewServerOptions struct {
-	Version  string
-	Username string
-	Password string
-	Logger   *slog.Logger
+	Version           string
+	Username          string
+	Password          string
+	Logger            *slog.Logger
+	RateLimitInterval time.Duration
 }
 
 func NewServer(opts NewServerOptions) (*Server, error) {
-	paprika3, err := paprika.NewClient(opts.Username, opts.Password, opts.Version, opts.Logger)
+	paprika3, err := paprika.NewClient(opts.Username, opts.Password, opts.Version, opts.Logger, opts.RateLimitInterval)
 	if err != nil {
 		return nil, err
 	}

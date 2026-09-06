@@ -2,8 +2,13 @@ package paprika_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,7 +24,7 @@ func newTestClient(t *testing.T) *paprika.Client {
 	if username == "" || password == "" {
 		t.Skip("PAPRIKA_USERNAME and PAPRIKA_PASSWORD must be set")
 	}
-	client, err := paprika.NewClient(username, password, "dev", nil)
+	client, err := paprika.NewClient(username, password, "dev", nil, 0)
 	require.NoError(t, err)
 	return client
 }
@@ -259,3 +264,94 @@ func TestGroceryItemOnSpecificList(t *testing.T) {
 	require.NoError(t, err)
 	t.Logf("Deleted grocery item: %s", savedItem.UID)
 }
+
+// TestRateLimited verifies that the client retries on HTTP 429 and succeeds when
+// the server eventually returns 200. The httptest server returns 429 twice, then 200.
+func TestRateLimited(t *testing.T) {
+	var callCount atomic.Int32
+
+	recipeListJSON, err := json.Marshal(paprika.RecipeList{
+		Result: []struct {
+			UID  string `json:"uid"`
+			Hash string `json:"hash"`
+		}{
+			{UID: "TEST-UID-1", Hash: "abc123"},
+		},
+	})
+	require.NoError(t, err)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := callCount.Add(1)
+		if n <= 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(recipeListJSON)
+	}))
+	defer srv.Close()
+
+	// Use a very short rate-limit interval to keep the test fast.
+	httpClient := &http.Client{Transport: &urlRewriteTransport{base: srv.URL}}
+	client := paprika.NewClientFromHTTPClient(httpClient, nil, 1*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	result, listErr := client.ListRecipes(ctx)
+	require.NoError(t, listErr, "expected success after retries, got error")
+	assert.Len(t, result.Result, 1)
+	assert.Equal(t, "TEST-UID-1", result.Result[0].UID)
+	assert.Equal(t, int32(3), callCount.Load(), "server should have been called exactly 3 times")
+}
+
+// urlRewriteTransport rewrites request URLs to a fixed base URL, allowing httptest
+// servers to intercept calls that target the real Paprika host.
+type urlRewriteTransport struct {
+	base string
+}
+
+func (ut *urlRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req2 := req.Clone(req.Context())
+	baseURL, _ := http.NewRequest(http.MethodGet, ut.base, nil)
+	req2.URL.Scheme = baseURL.URL.Scheme
+	req2.URL.Host = baseURL.URL.Host
+	req2.RequestURI = ""
+	return http.DefaultTransport.RoundTrip(req2)
+}
+
+// TestSaveRecipePreservesCreated verifies that SaveRecipe does not overwrite
+// an already-set Created timestamp.
+func TestSaveRecipePreservesCreated(t *testing.T) {
+	originalCreated := "2020-06-15 12:00:00"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Accept all POSTs (recipe save + notify) and return minimal success JSON.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	httpClient := &http.Client{Transport: &urlRewriteTransport{base: srv.URL}}
+	client := paprika.NewClientFromHTTPClient(httpClient, nil, 1*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	recipe := paprika.Recipe{
+		UID:        "AAAAAAAA-0000-0000-0000-000000000001",
+		Name:       "Preserved Timestamps Pie",
+		Created:    originalCreated,
+		Categories: []string{},
+	}
+
+	saved, saveErr := client.SaveRecipe(ctx, recipe)
+	require.NoError(t, saveErr)
+	assert.Equal(t, originalCreated, saved.Created,
+		"SaveRecipe must not overwrite Created when it is already set")
+}
+
+// Compile-time guard: verify ErrRateLimited is exported and is a sentinel error.
+var _ = errors.Is(paprika.ErrRateLimited, paprika.ErrRateLimited)

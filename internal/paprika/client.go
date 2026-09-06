@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,7 +20,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/time/rate"
 )
+
+// ErrRateLimited is returned when the server responds with 429 and all retries are exhausted.
+var ErrRateLimited = errors.New("rate limited")
 
 // roundTripper is a wrapper around http.RoundTripper
 // that adds the specified headers to each request
@@ -109,7 +114,16 @@ func userAgent(version string) string {
 	return fmt.Sprintf("paprika-3-mcp/%s (golang; %s)", version, runtime.Version())
 }
 
-func NewClient(username, password, version string, logger *slog.Logger) (*Client, error) {
+// defaultRateLimitInterval is the default interval between requests (4 req/s).
+const defaultRateLimitInterval = 250 * time.Millisecond
+
+// NewClient creates a new Paprika API client. rateLimitInterval controls the minimum
+// time between requests; pass 0 to use the default of 250 ms (4 req/s).
+func NewClient(username, password, version string, logger *slog.Logger, rateLimitInterval time.Duration) (*Client, error) {
+	if rateLimitInterval <= 0 {
+		rateLimitInterval = defaultRateLimitInterval
+	}
+
 	// Create the http client & login to retrieve an authentication token
 	t := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -154,18 +168,91 @@ func NewClient(username, password, version string, logger *slog.Logger) (*Client
 	}
 
 	return &Client{
-		client:   client,
-		logger:   l,
-		username: username,
-		password: password,
+		client:            client,
+		logger:            l,
+		username:          username,
+		password:          password,
+		rateLimitInterval: rateLimitInterval,
+		limiter:           rate.NewLimiter(rate.Every(rateLimitInterval), 1),
 	}, nil
 }
 
 type Client struct {
-	client   *http.Client
-	logger   *slog.Logger
-	username string
-	password string
+	client            *http.Client
+	logger            *slog.Logger
+	username          string
+	password          string
+	rateLimitInterval time.Duration
+	limiter           *rate.Limiter
+}
+
+// do sends an HTTP request through the rate limiter, retrying up to 3 times on HTTP 429.
+// It honours the Retry-After header when present; otherwise it backs off 1s, 2s, 4s.
+// After all retries are exhausted it returns an error wrapping ErrRateLimited.
+func (c *Client) do(ctx context.Context, req *http.Request) (*http.Response, error) {
+	// Read the body upfront so we can replay it on retries.
+	var bodyBytes []byte
+	if req.Body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read request body: %w", err)
+		}
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
+	const maxRetries = 3
+	backoffs := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Restore body for each attempt after the first.
+		if bodyBytes != nil && attempt > 0 {
+			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
+
+		// Wait for the rate limiter before each attempt.
+		if err := c.limiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusTooManyRequests {
+			return resp, nil
+		}
+
+		// We got a 429. If this was the last attempt, give up.
+		if attempt == maxRetries {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("request to %s failed after %d retries: %w", req.URL, maxRetries, ErrRateLimited)
+		}
+
+		// Determine how long to wait before the next attempt.
+		waitDur := backoffs[attempt]
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if seconds, parseErr := time.ParseDuration(ra + "s"); parseErr == nil {
+				waitDur = seconds
+			}
+		}
+
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		c.logger.Warn("rate limited, retrying", "attempt", attempt+1, "wait", waitDur)
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(waitDur):
+		}
+	}
+
+	// Unreachable, but satisfies the compiler.
+	return nil, fmt.Errorf("%w", ErrRateLimited)
 }
 
 type loginResponse struct {
@@ -235,7 +322,7 @@ func (c *Client) ListRecipes(ctx context.Context) (*RecipeList, error) {
 		return nil, err
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := c.do(ctx, req)
 	if err != nil {
 		c.logger.Error("failed to get recipes", "error", err)
 		return nil, err
@@ -484,7 +571,7 @@ func (c *Client) GetRecipe(ctx context.Context, uid string) (*Recipe, error) {
 		return nil, err
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := c.do(ctx, req)
 	if err != nil {
 		c.logger.Error("failed to get recipe", "error", err)
 		return nil, err
@@ -529,7 +616,9 @@ func (c *Client) SaveRecipe(ctx context.Context, recipe Recipe) (*Recipe, error)
 	if recipe.Categories == nil {
 		recipe.Categories = []string{}
 	}
-	recipe.updateCreated()
+	if recipe.Created == "" {
+		recipe.updateCreated()
+	}
 	recipe.generateUUID()
 	if err := recipe.updateHash(); err != nil {
 		return nil, err
@@ -552,7 +641,7 @@ func (c *Client) notify(ctx context.Context) error {
 		return err
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := c.do(ctx, req)
 	if err != nil {
 		c.logger.Error("failed to notify", "error", err)
 		return err
@@ -626,7 +715,7 @@ func (c *Client) postV2(ctx context.Context, endpoint string, v interface{}) err
 	req.Header.Set("Content-Type", mpWriter.FormDataContentType())
 	req.ContentLength = int64(body.Len())
 
-	resp, err := c.client.Do(req)
+	resp, err := c.do(ctx, req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -671,7 +760,7 @@ func (c *Client) ListGroceryLists(ctx context.Context) (*GroceryListResponse, er
 		return nil, err
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := c.do(ctx, req)
 	if err != nil {
 		c.logger.Error("failed to get grocery lists", "error", err)
 		return nil, err
@@ -707,7 +796,7 @@ func (c *Client) ListMealPlan(ctx context.Context) (*MealPlanResponse, error) {
 		return nil, err
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := c.do(ctx, req)
 	if err != nil {
 		c.logger.Error("failed to get meals", "error", err)
 		return nil, err
@@ -743,7 +832,7 @@ func (c *Client) ListGroceries(ctx context.Context) (*GroceryResponse, error) {
 		return nil, err
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := c.do(ctx, req)
 	if err != nil {
 		c.logger.Error("failed to get groceries", "error", err)
 		return nil, err

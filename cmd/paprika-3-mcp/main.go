@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"time"
 
 	"github.com/soggycactus/paprika-3-mcp/internal/mcpserver"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -31,6 +33,7 @@ func getLogFilePath() string {
 func main() {
 	username := flag.String("username", "", "Paprika 3 username (email). Falls back to $PAPRIKA_USERNAME.")
 	password := flag.String("password", "", "Paprika 3 password. Falls back to $PAPRIKA_PASSWORD.")
+	rateLimitMs := flag.Int("rate-limit-ms", 250, "Minimum milliseconds between API requests. Falls back to $PAPRIKA_RATE_LIMIT_MS.")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
@@ -45,11 +48,20 @@ func main() {
 	if *password == "" {
 		*password = os.Getenv("PAPRIKA_PASSWORD")
 	}
+	if *rateLimitMs == 250 {
+		if envVal := os.Getenv("PAPRIKA_RATE_LIMIT_MS"); envVal != "" {
+			if ms, err := strconv.Atoi(envVal); err == nil && ms > 0 {
+				*rateLimitMs = ms
+			}
+		}
+	}
 
 	if *username == "" || *password == "" {
 		fmt.Fprintln(os.Stderr, "username and password are required (set --username/--password flags or PAPRIKA_USERNAME/PAPRIKA_PASSWORD env vars)")
 		os.Exit(1)
 	}
+
+	rateLimitInterval := time.Duration(*rateLimitMs) * time.Millisecond
 
 	logFile := getLogFilePath()
 	writer := &lumberjack.Logger{
@@ -65,10 +77,11 @@ func main() {
 	}))
 
 	s, err := mcpserver.NewServer(mcpserver.NewServerOptions{
-		Version:  version,
-		Username: *username,
-		Password: *password,
-		Logger:   logger,
+		Version:           version,
+		Username:          *username,
+		Password:          *password,
+		Logger:            logger,
+		RateLimitInterval: rateLimitInterval,
 	})
 	if err != nil {
 		logger.Error("failed to start paprika-3-mcp server", "err", err)
