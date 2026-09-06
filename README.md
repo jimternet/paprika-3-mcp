@@ -165,6 +165,10 @@ Restart Claude and you should see the MCP server tools after clicking on the ham
 
 ![MCP server running with Claude](docs/install.png)
 
+## 🙏 Acknowledgements
+
+This project is a fork of [soggycactus/paprika-3-mcp](https://github.com/soggycactus/paprika-3-mcp), created by [Lucas Stephens](https://github.com/soggycactus). A huge thank you to Lucas for the original work and to the community contributors — [JoshTerAvest](https://github.com/JoshTerAvest), [okhick](https://github.com/okhick), and [bsitkoff](https://github.com/bsitkoff) — whose pull requests formed the foundation of this fork. None of this would exist without their effort.
+
 ## 📄 License
 
 This project is open source under the [MIT License](./LICENSE) © 2025 [Lucas Stephens](https://github.com/soggycactus).
