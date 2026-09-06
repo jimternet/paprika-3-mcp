@@ -74,18 +74,24 @@ type Server struct {
 }
 
 func (s *Server) Start() {
-	// Load from disk, then do an initial synchronous refresh so the first
-	// tool call has live data. Serve even if the refresh fails.
+	ctx := context.Background()
+
+	// Load from disk synchronously (fast — no network). If the cache was empty
+	// the Load marks a first-fill so the next Refresh uses concurrent workers.
 	if err := s.cache.Load(); err != nil {
 		s.logger.Error("failed to load recipe cache from disk", "error", err)
 	}
-	ctx := context.Background()
-	if err := s.cache.Refresh(ctx); err != nil {
-		s.logger.Error("initial cache refresh failed; serving with cached data", "error", err)
-	}
-	s.registerCachedResources()
 
-	// Start background refresh ticker.
+	// First Refresh runs in the background so ServeStdio starts immediately
+	// and Claude Desktop does not time out the initialize handshake.
+	go func() {
+		if err := s.cache.Refresh(ctx); err != nil {
+			s.logger.Error("initial cache refresh failed; serving with cached data", "error", err)
+		}
+		s.registerCachedResources()
+	}()
+
+	// Background refresh ticker.
 	go func() {
 		ticker := time.NewTicker(s.refreshInterval)
 		defer ticker.Stop()
@@ -171,13 +177,17 @@ func (s *Server) Start() {
 		mcp.WithDescription("List all grocery/shopping lists in the Paprika account. Paprika supports multiple grocery lists (e.g. one per store). Each list has a UID and a name. One list is marked as the default. Use the list UIDs with add_grocery_item to add items to a specific list."),
 	)
 	addGroceryItemTool := mcp.NewTool("add_grocery_item",
-		mcp.WithDescription("Add an item to a Paprika grocery/shopping list. If no list_uid is provided, the item is added to the user's default grocery list. To add to a specific list, first call list_grocery_lists to get the available list UIDs."),
+		mcp.WithDescription("Add an item to a Paprika grocery/shopping list. Aisle is assigned automatically from the user's Paprika history (most accurate), then from a built-in keyword table. Pass aisle or aisle_uid to override. If no list_uid is provided, the item is added to the default list."),
 		mcp.WithString("ingredient", mcp.Description("The ingredient/item name"), mcp.Required()),
-		mcp.WithString("list_uid", mcp.Description("UID of the grocery list to add the item to. If omitted, the item is added to the default list. Call list_grocery_lists to discover available lists and their UIDs."), mcp.DefaultString("")),
-		mcp.WithString("aisle", mcp.Description("Store aisle where item is located (optional)"), mcp.DefaultString("")),
+		mcp.WithString("list_uid", mcp.Description("UID of the grocery list. If omitted, uses the default list. Call list_grocery_lists to discover available lists."), mcp.DefaultString("")),
+		mcp.WithString("aisle", mcp.Description("Aisle name override. If omitted, the aisle is looked up automatically. Call list_aisles to see available aisles."), mcp.DefaultString("")),
+		mcp.WithString("aisle_uid", mcp.Description("Aisle UID override (takes precedence over aisle name). Call list_aisles to see available aisles and their UIDs."), mcp.DefaultString("")),
 		mcp.WithString("quantity", mcp.Description("Quantity needed (optional)"), mcp.DefaultString("")),
 		mcp.WithString("recipe", mcp.Description("Recipe this ingredient is for (optional)"), mcp.DefaultString("")),
 		mcp.WithString("instruction", mcp.Description("Special instructions (optional)"), mcp.DefaultString("")),
+	)
+	listAislesTool := mcp.NewTool("list_aisles",
+		mcp.WithDescription("List the user's grocery store aisles with name, UID, and sort order. Aisles are defined in Paprika under Settings and synced on every refresh. Use aisle names or UIDs with add_grocery_item to control where items are filed."),
 	)
 	removeGroceryItemTool := mcp.NewTool("remove_grocery_item",
 		mcp.WithDescription("Remove an item from a Paprika grocery list by name. Performs a case-insensitive search across ingredient and item names. If multiple items match, only the first match is removed and the others are reported. This is a soft delete."),
@@ -232,10 +242,14 @@ func (s *Server) Start() {
 	}, server.ServerTool{
 		Tool:    refreshRecipesTool,
 		Handler: s.refreshRecipes,
+	}, server.ServerTool{
+		Tool:    listAislesTool,
+		Handler: s.listAisles,
 	})
 
+	s.logger.Info("serving stdio")
 	if err := server.ServeStdio(s.server); err != nil {
-		s.logger.Error("Server error", "err", err)
+		s.logger.Error("server error", "err", err)
 	}
 }
 
@@ -426,6 +440,11 @@ func formatRecipeList(recipes []paprika.Recipe) string {
 func (s *Server) listRecipes(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
 
+	filling := s.cache.IsFilling()
+	if filling {
+		s.logger.Warn("list_recipes called during initial fill; returning partial cache")
+	}
+
 	limit := req.GetInt("limit", 0)
 	category := strings.TrimSpace(req.GetString("category", ""))
 
@@ -459,11 +478,19 @@ func (s *Server) listRecipes(ctx context.Context, req mcp.CallToolRequest) (*mcp
 		resultText.WriteString(formatRecipeList(recipes))
 	}
 
+	if filling {
+		resultText.WriteString("\n_(Note: initial sync is still in progress — this list may be incomplete. It will complete automatically in the background.)_\n")
+	}
 	return mcp.NewToolResultText(resultText.String()), nil
 }
 
 func (s *Server) searchRecipes(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
+
+	filling := s.cache.IsFilling()
+	if filling {
+		s.logger.Warn("search_recipes called during initial fill; returning partial cache")
+	}
 
 	query := strings.TrimSpace(req.GetString("query", ""))
 	if query == "" {
@@ -506,6 +533,9 @@ func (s *Server) searchRecipes(ctx context.Context, req mcp.CallToolRequest) (*m
 		resultText.WriteString(fmt.Sprintf("Found %d recipe(s):\n\n", len(matched)))
 		resultText.WriteString(formatRecipeList(matched))
 	}
+	if filling {
+		resultText.WriteString("\n_(Note: initial sync is still in progress — results may be incomplete. It will complete automatically in the background.)_\n")
+	}
 
 	return mcp.NewToolResultText(resultText.String()), nil
 }
@@ -513,15 +543,14 @@ func (s *Server) searchRecipes(ctx context.Context, req mcp.CallToolRequest) (*m
 func (s *Server) addGroceryItem(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
 
-	// Get required parameter
 	ingredient, err := req.RequireString("ingredient")
 	if err != nil || ingredient == "" {
 		return mcp.NewToolResultError("ingredient is required"), nil
 	}
 
-	// Get optional parameters
 	listUID := strings.TrimSpace(req.GetString("list_uid", ""))
-	aisle := strings.TrimSpace(req.GetString("aisle", ""))
+	aisleOverrideName := strings.TrimSpace(req.GetString("aisle", ""))
+	aisleOverrideUID := strings.TrimSpace(req.GetString("aisle_uid", ""))
 	quantity := strings.TrimSpace(req.GetString("quantity", ""))
 	recipe := strings.TrimSpace(req.GetString("recipe", ""))
 	instruction := strings.TrimSpace(req.GetString("instruction", ""))
@@ -550,29 +579,55 @@ func (s *Server) addGroceryItem(ctx context.Context, req mcp.CallToolRequest) (*
 		}
 	}
 
-	// Create grocery item
+	// Resolve aisle: uid override > name override > automatic lookup > none.
+	var aisleName, aisleUID, aisleReason string
+	switch {
+	case aisleOverrideUID != "":
+		if a, ok := s.cache.AisleByUID(aisleOverrideUID); ok {
+			aisleName = a.Name
+			aisleUID = a.UID
+			aisleReason = "specified"
+		}
+	case aisleOverrideName != "":
+		if a, ok := s.cache.AisleByName(aisleOverrideName); ok {
+			aisleName = a.Name
+			aisleUID = a.UID
+			aisleReason = "specified"
+		} else {
+			// Caller provided a name that doesn't match any known aisle; use it
+			// as-is so the item lands somewhere rather than in Miscellaneous.
+			aisleName = aisleOverrideName
+			aisleReason = "specified"
+		}
+	default:
+		if name, reason := s.cache.LookupIngredientAisle(ingredient); name != "" {
+			if a, ok := s.cache.AisleByName(name); ok {
+				aisleName = a.Name
+				aisleUID = a.UID
+				aisleReason = reason
+			}
+		}
+	}
+
 	item := paprika.GroceryItem{
 		Ingredient:  ingredient,
-		Name:        ingredient, // Use ingredient name as display name
+		Name:        ingredient,
 		ListUID:     listUID,
-		Aisle:       aisle,
+		Aisle:       aisleName,
+		AisleUID:    aisleUID,
 		Quantity:    quantity,
 		Recipe:      recipe,
 		Instruction: instruction,
-		Purchased:   false, // New items are not purchased
-		OrderFlag:   0,
 	}
 
-	// Save the grocery item
 	savedItem, err := s.paprika3.SaveGroceryItem(ctx, item)
 	if err != nil {
 		return nil, fmt.Errorf("failed to add grocery item: %w", err)
 	}
 
 	duration := time.Since(start)
-	s.logger.Info("Added grocery item", "ingredient", ingredient, "aisle", aisle, "duration", duration)
+	s.logger.Info("added grocery item", "ingredient", ingredient, "aisle", aisleName, "reason", aisleReason, "duration", duration)
 
-	// Format result
 	var resultText strings.Builder
 	resultText.WriteString("# Grocery Item Added Successfully\n\n")
 	resultText.WriteString(fmt.Sprintf("Added **%s** to your grocery list\n\n", ingredient))
@@ -580,8 +635,15 @@ func (s *Server) addGroceryItem(ctx context.Context, req mcp.CallToolRequest) (*
 	if quantity != "" {
 		resultText.WriteString(fmt.Sprintf("- **Quantity**: %s\n", quantity))
 	}
-	if aisle != "" {
-		resultText.WriteString(fmt.Sprintf("- **Aisle**: %s\n", aisle))
+	switch {
+	case aisleName != "" && aisleReason == "learned":
+		resultText.WriteString(fmt.Sprintf("- **Aisle**: %s _(learned from your history)_\n", aisleName))
+	case aisleName != "" && aisleReason == "default":
+		resultText.WriteString(fmt.Sprintf("- **Aisle**: %s _(default table)_\n", aisleName))
+	case aisleName != "" && aisleReason == "specified":
+		resultText.WriteString(fmt.Sprintf("- **Aisle**: %s _(specified)_\n", aisleName))
+	default:
+		resultText.WriteString("- **Aisle**: Miscellaneous _(no match)_\n")
 	}
 	if recipe != "" {
 		resultText.WriteString(fmt.Sprintf("- **For Recipe**: %s\n", recipe))
@@ -666,6 +728,11 @@ func (s *Server) removeGroceryItem(ctx context.Context, req mcp.CallToolRequest)
 func (s *Server) getRecipe(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
 
+	filling := s.cache.IsFilling()
+	if filling {
+		s.logger.Warn("get_recipe called during initial fill; cache may not have this recipe yet")
+	}
+
 	uid, err := req.RequireString("uid")
 	if err != nil || uid == "" {
 		return mcp.NewToolResultError("uid is required"), nil
@@ -679,6 +746,9 @@ func (s *Server) getRecipe(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		var err error
 		recipe, err = s.paprika3.GetRecipe(fetchCtx, uid)
 		if err != nil {
+			if filling {
+				return mcp.NewToolResultText("Recipe not yet in cache — initial sync is still in progress. Try again in a moment or call refresh_recipes."), nil
+			}
 			return nil, fmt.Errorf("failed to get recipe: %w", err)
 		}
 		s.cache.Put(recipe)
@@ -729,6 +799,11 @@ func recipeMetadataBlock(r *paprika.Recipe) string {
 func (s *Server) listCategories(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
 
+	filling := s.cache.IsFilling()
+	if filling {
+		s.logger.Warn("list_categories called during initial fill; returning partial cache")
+	}
+
 	recipes := s.cache.List()
 
 	// Collect category counts using case-insensitive dedup (preserve original casing from first seen).
@@ -773,17 +848,34 @@ func (s *Server) listCategories(ctx context.Context, req mcp.CallToolRequest) (*
 			resultText.WriteString(")\n")
 		}
 	}
+	if filling {
+		resultText.WriteString("\n_(Note: initial sync is still in progress — category list may be incomplete.)_\n")
+	}
 
 	return mcp.NewToolResultText(resultText.String()), nil
+}
+
+func (s *Server) listAisles(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	aisles := s.cache.Aisles()
+	var sb strings.Builder
+	sb.WriteString("# Grocery Aisles\n\n")
+	if len(aisles) == 0 {
+		sb.WriteString("No aisles found. Aisles are configured in Paprika under Settings → Grocery Aisles and synced on every refresh. Try calling refresh_recipes.\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("Found %d aisle(s):\n\n", len(aisles)))
+		for _, a := range aisles {
+			sb.WriteString(fmt.Sprintf("- **%s** — UID: `%s`\n", a.Name, a.UID))
+		}
+	}
+	return mcp.NewToolResultText(sb.String()), nil
 }
 
 func (s *Server) refreshRecipes(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
 
-	refreshCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-
-	if err := s.cache.Refresh(refreshCtx); err != nil {
+	// Use background context: the MCP request context may be short-lived but
+	// a refresh on a large collection takes longer than typical RPC timeouts.
+	if err := s.cache.Refresh(context.Background()); err != nil {
 		return nil, fmt.Errorf("refresh failed: %w", err)
 	}
 	s.registerCachedResources()

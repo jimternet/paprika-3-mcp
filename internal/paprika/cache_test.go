@@ -14,6 +14,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// withAisleEndpoints wraps a handler to serve empty aisle/ingredient lists
+// for the two new Paprika sync endpoints added in v0.2. This keeps existing
+// recipe-focused tests passing without modifying each server definition.
+func withAisleEndpoints(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v2/sync/groceryaisles/":
+			w.Write([]byte(`{"result":[]}`))
+			return
+		case "/api/v2/sync/groceryingredients/":
+			w.Write([]byte(`{"result":[]}`))
+			return
+		}
+		next(w, r)
+	}
+}
+
 // recipeFixture is a convenience for building test Recipe values.
 func recipeFixture(uid, name, hash string) paprika.Recipe {
 	return paprika.Recipe{
@@ -83,7 +101,7 @@ func TestCacheRefreshFetchesAll(t *testing.T) {
 		{"UID-3", "hash3"},
 	})
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAisleEndpoints(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/v2/sync/recipes" {
 			w.Write(listBody)
@@ -119,7 +137,7 @@ func TestCacheRefreshSkipsUnchanged(t *testing.T) {
 
 	var getCalls atomic.Int32
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAisleEndpoints(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/v2/sync/recipes" {
 			w.Write(listBody)
@@ -156,7 +174,7 @@ func TestCacheRefreshFetchesChanged(t *testing.T) {
 
 	var getCalls atomic.Int32
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAisleEndpoints(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/v2/sync/recipes" {
 			w.Write(buildListJSON(t, []struct{ UID, Hash string }{{"UID-1", currentHash}}))
@@ -201,7 +219,7 @@ func TestCacheRefreshPrunesDeleted(t *testing.T) {
 	// Start with both recipes.
 	includeSecond := true
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAisleEndpoints(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/v2/sync/recipes" {
 			pairs := []struct{ UID, Hash string }{{"UID-1", "hash1"}}
@@ -250,7 +268,7 @@ func TestCacheRefreshRemovesTrash(t *testing.T) {
 
 	currentHash2 := "hash2" // initial hash differs so it will be fetched on second refresh
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAisleEndpoints(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/v2/sync/recipes" {
 			w.Write(buildListJSON(t, []struct{ UID, Hash string }{
@@ -288,7 +306,7 @@ func TestCacheRefreshRemovesTrash(t *testing.T) {
 // TestCacheLoadRoundTrip: save via Put, then Load restores the data.
 func TestCacheLoadRoundTrip(t *testing.T) {
 	// Build a cache with a known recipe, using a no-op server.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAisleEndpoints(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/v2/sync/recipes" {
 			w.Write(buildListJSON(t, nil))
@@ -309,7 +327,7 @@ func TestCacheLoadRoundTrip(t *testing.T) {
 
 	recipe := recipeFixture("UID-99", "Zucchini Soup", "hashZ")
 
-	srvWithRecipe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srvWithRecipe := httptest.NewServer(withAisleEndpoints(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/v2/sync/recipes" {
 			w.Write(buildListJSON(t, []struct{ UID, Hash string }{{"UID-99", "hashZ"}}))
@@ -347,7 +365,7 @@ func TestCacheLoadRoundTrip(t *testing.T) {
 func TestCacheRefreshContinuesOnError(t *testing.T) {
 	good := recipeFixture("UID-OK", "Good Recipe", "hashOK")
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAisleEndpoints(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/v2/sync/recipes" {
 			w.Write(buildListJSON(t, []struct{ UID, Hash string }{

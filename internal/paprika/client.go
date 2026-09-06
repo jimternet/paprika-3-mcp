@@ -752,6 +752,85 @@ type GroceryListResponse struct {
 	Result []GroceryList `json:"result"`
 }
 
+// GroceryAisle represents a user-defined store aisle in Paprika.
+// Paprika's sync API does NOT assign aisles server-side; items POSTed with an
+// empty aisle field land in Miscellaneous. Sending the aisle name in the
+// `aisle` field is sufficient for the app to file the item correctly. The app
+// maintains a learned ingredient→aisle table that syncs via groceryingredients/.
+type GroceryAisle struct {
+	UID       string `json:"uid"`
+	Name      string `json:"name"`
+	OrderFlag int    `json:"order_flag"`
+}
+
+type GroceryAisleResponse struct {
+	Result []GroceryAisle `json:"result"`
+}
+
+// GroceryIngredient records the user's learned ingredient-to-aisle mapping.
+// The Paprika app builds this table locally and syncs it via groceryingredients/.
+type GroceryIngredient struct {
+	UID      string `json:"uid"`
+	Name     string `json:"name"`
+	AisleUID string `json:"aisle_uid"`
+}
+
+type GroceryIngredientResponse struct {
+	Result []GroceryIngredient `json:"result"`
+}
+
+// GetGroceryAisles retrieves the user's grocery store aisles.
+func (c *Client) GetGroceryAisles(ctx context.Context) (*GroceryAisleResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://paprikaapp.com/api/v2/sync/groceryaisles/", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get grocery aisles: %s", resp.Status)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var result GroceryAisleResponse
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, err
+	}
+	c.logger.Info("retrieved grocery aisles", "count", len(result.Result))
+	return &result, nil
+}
+
+// GetGroceryIngredients retrieves the user's learned ingredient-to-aisle mappings.
+func (c *Client) GetGroceryIngredients(ctx context.Context) (*GroceryIngredientResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://paprikaapp.com/api/v2/sync/groceryingredients/", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get grocery ingredients: %s", resp.Status)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var result GroceryIngredientResponse
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, err
+	}
+	c.logger.Info("retrieved grocery ingredients", "count", len(result.Result))
+	return &result, nil
+}
+
 // ListGroceryLists retrieves all grocery lists from the Paprika API
 func (c *Client) ListGroceryLists(ctx context.Context) (*GroceryListResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://paprikaapp.com/api/v2/sync/grocerylists", nil)

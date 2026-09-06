@@ -165,6 +165,18 @@ Restart Claude and you should see the MCP server tools after clicking on the ham
 
 ![MCP server running with Claude](docs/install.png)
 
+## 🛒 Grocery aisles
+
+Paprika stores aisle names in your grocery items locally on each device and does not assign them server-side — so when `add_grocery_item` adds something via the API, it arrives with no aisle.
+
+This server works around that by doing client-side aisle assignment in two tiers:
+
+1. **Your filing history (learned)** — every time you sync, the server fetches your `groceryingredients` table, which records the aisle you filed each ingredient into inside the Paprika app. If the ingredient you're adding (after stripping quantities and parentheticals) matches one of those entries, the learned aisle is used.
+2. **Built-in keyword table (default)** — if no match is found in your history, a curated keyword list covers the most common grocery items (produce, dairy, meat, seafood, frozen, baking, spices, etc.). The matched aisle name is verified against your own aisle list; no aisle is ever invented.
+3. **Miscellaneous** — if neither tier matches, the item is filed under Miscellaneous so it still ends up on the list.
+
+Your filing history in the Paprika app is picked up automatically on the next background refresh (default: every 30 minutes). The more you organise items in the app, the better the server's suggestions become.
+
 ## 🙏 Acknowledgements
 
 This project is a fork of [soggycactus/paprika-3-mcp](https://github.com/soggycactus/paprika-3-mcp), created by [Lucas Stephens](https://github.com/soggycactus). A huge thank you to Lucas for the original work and to the community contributors — [JoshTerAvest](https://github.com/JoshTerAvest), [okhick](https://github.com/okhick), and [bsitkoff](https://github.com/bsitkoff) — whose pull requests formed the foundation of this fork. None of this would exist without their effort.
