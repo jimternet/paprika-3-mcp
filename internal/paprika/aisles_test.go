@@ -20,6 +20,7 @@ var fixtureAisles = []paprika.GroceryAisle{
 	{UID: "a-spices", Name: "Spices", OrderFlag: 8},
 	{UID: "a-snacks", Name: "Snacks", OrderFlag: 9},
 	{UID: "a-beverages", Name: "Beverages", OrderFlag: 10},
+	{UID: "a-condiments", Name: "Condiments", OrderFlag: 11},
 }
 
 var fixtureIngredients = []paprika.GroceryIngredient{
@@ -141,6 +142,56 @@ func TestLookupIngredientAisle(t *testing.T) {
 			name:       "frozen pizza keyword",
 			input:      "frozen pizza",
 			wantAisle:  "Frozen",
+			wantReason: "default",
+		},
+		// Form modifier tests
+		{
+			name:       "canned corn goes to Canned Goods not Produce",
+			input:      "canned corn",
+			wantAisle:  "Canned Goods",
+			wantReason: "default",
+		},
+		{
+			name:       "frozen corn goes to Frozen not Produce",
+			input:      "frozen corn",
+			wantAisle:  "Frozen",
+			wantReason: "default",
+		},
+		{
+			name:       "bare corn goes to Produce",
+			input:      "corn",
+			wantAisle:  "Produce",
+			wantReason: "default",
+		},
+		{
+			name:       "can of corn goes to Canned Goods",
+			input:      "can of corn",
+			wantAisle:  "Canned Goods",
+			wantReason: "default",
+		},
+		{
+			name:       "jarred salsa goes to Canned Goods",
+			input:      "jarred salsa",
+			wantAisle:  "Canned Goods",
+			wantReason: "default",
+		},
+		// Longest-match tests
+		{
+			name:       "corn tortillas matches corn tortillas not corn",
+			input:      "corn tortillas",
+			wantAisle:  "Bakery",
+			wantReason: "default",
+		},
+		{
+			name:       "coconut milk matches coconut milk not milk",
+			input:      "coconut milk",
+			wantAisle:  "Canned Goods",
+			wantReason: "default",
+		},
+		{
+			name:       "almond milk matches almond milk not milk",
+			input:      "almond milk",
+			wantAisle:  "Canned Goods",
 			wantReason: "default",
 		},
 		{

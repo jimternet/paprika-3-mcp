@@ -55,6 +55,30 @@ func singularPluralVariants(s string) []string {
 	return out
 }
 
+// formModifier maps a leading word or phrase to candidate aisle names (tried in
+// order; first one present in the user's aisle list wins). A nil aisles slice
+// means "no override — fall through to ingredient keywords" (used for "fresh").
+type formModifier struct {
+	prefix string
+	aisles []string
+}
+
+// formModifiers is checked before the keyword table. A leading form word
+// ("canned", "frozen", etc.) overrides ingredient-based aisle lookup.
+// Longer prefixes are listed before shorter ones to avoid premature matches.
+var formModifiers = []formModifier{
+	{"can of", []string{"Canned Goods", "Pantry", "Canned"}},
+	{"tin of", []string{"Canned Goods", "Pantry", "Canned"}},
+	{"jar of", []string{"Canned Goods", "Pantry", "Canned"}},
+	{"canned", []string{"Canned Goods", "Pantry", "Canned"}},
+	{"tinned", []string{"Canned Goods", "Pantry", "Canned"}},
+	{"jarred", []string{"Canned Goods", "Pantry", "Canned"}},
+	{"frozen", []string{"Frozen"}},
+	{"dried",  []string{"Pantry", "Baking", "Dry Goods"}},
+	{"dry",    []string{"Pantry", "Baking", "Dry Goods"}},
+	{"fresh",  nil}, // no override — fall through to ingredient keywords
+}
+
 // wordMatch reports whether keyword (possibly multi-word) appears as a
 // contiguous whole-word sequence within name.
 func wordMatch(name, keyword string) bool {
@@ -85,11 +109,12 @@ func wordMatch(name, keyword string) bool {
 // Lookup tiers:
 //  1. Exact match in the user's groceryingredients table.
 //  2. Singular/plural variants of the normalized name.
-//  3. Built-in keyword table (defaultAisleKeywords in aisles_default.go).
+//  3. Form modifier check: "canned X" → Canned Goods, "frozen X" → Frozen, etc.
+//  4. Built-in keyword table (defaultAisleKeywords in aisles_default.go),
+//     longest keyword match wins.
 //
-// Tier 3 names are verified against the user's actual aisle list; if the user
-// does not have an aisle with that name the entry is skipped (aisles are never
-// invented).
+// Aisle names are verified against the user's actual aisle list; no aisle is
+// ever invented.
 func (c *Cache) LookupIngredientAisle(name string) (aisleName, reason string) {
 	normalized := normalizeIngredient(name)
 
@@ -139,19 +164,49 @@ func (c *Cache) LookupIngredientAisle(name string) (aisleName, reason string) {
 		}
 	}
 
-	// Tier 3: built-in keyword table.
-	// Try the normalized name and all its singular/plural variants so that
-	// "apples" matches the keyword "apple", "tomatoes" matches "tomato", etc.
+	// Form modifier check: "canned X" → Canned Goods, "frozen X" → Frozen, etc.
+	// Runs before the keyword table and overrides ingredient-based lookup.
+	// "fresh" explicitly delegates to keyword lookup (nil aisles slice).
+	for _, fm := range formModifiers {
+		if normalized != fm.prefix && !strings.HasPrefix(normalized, fm.prefix+" ") {
+			continue
+		}
+		if fm.aisles == nil {
+			break // "fresh" — fall through to keyword table
+		}
+		for _, candidate := range fm.aisles {
+			if n, ok := resolveAisleName(candidate); ok {
+				return n, "default"
+			}
+		}
+		// Modifier matched but none of its aisles exist in the user's list.
+		return "", ""
+	}
+
+	// Tier 3: built-in keyword table — longest keyword match wins so that
+	// "corn tortillas" beats "corn", "coconut milk" beats "milk", etc.
+	// Try the normalized name and all singular/plural variants so that
+	// "apples" matches the keyword "apple".
 	tier3Candidates := append([]string{normalized}, singularPluralVariants(normalized)...)
+	type kwHit struct {
+		aisle  string
+		keyLen int
+	}
+	var best *kwHit
 	for _, kw := range defaultAisleKeywords {
 		for _, candidate := range tier3Candidates {
 			if wordMatch(candidate, kw.keyword) {
 				if n, ok := resolveAisleName(kw.aisle); ok {
-					return n, "default"
+					if best == nil || len(kw.keyword) > best.keyLen {
+						best = &kwHit{aisle: n, keyLen: len(kw.keyword)}
+					}
 				}
-				break // aisle name not in user's list; try next keyword
+				break
 			}
 		}
+	}
+	if best != nil {
+		return best.aisle, "default"
 	}
 
 	return "", ""
