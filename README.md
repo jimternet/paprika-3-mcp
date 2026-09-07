@@ -36,7 +36,7 @@ See anything missing? Open an issue on this repo to request a feature!
 - `list_grocery_lists` — View all grocery lists (Paprika supports multiple lists, e.g. one per store)
 - `list_aisles` — View grocery store aisles (synced from Paprika Settings)
 - `list_groceries` — View grocery items across all lists, grouped by aisle, with purchase status
-- `add_grocery_item` — Add an item to a grocery list with automatic aisle assignment (learned history → keyword table → Miscellaneous)
+- `add_grocery_item` — Add an item to a grocery list with automatic aisle assignment (history → form modifier → keyword table → Miscellaneous). The tool result always says which aisle was chosen and why.
 - `remove_grocery_item` — Remove an item by name (case-insensitive partial match)
 
 ## ⚙️ Prerequisites
@@ -168,15 +168,94 @@ Restart Claude and you should see the MCP server tools after clicking on the ham
 
 ## 🛒 Grocery aisles
 
-Paprika stores aisle names in your grocery items locally on each device and does not assign them server-side — so when `add_grocery_item` adds something via the API, it arrives with no aisle.
+### How aisle assignment works
 
-This server works around that by doing client-side aisle assignment in two tiers:
+Paprika does not assign aisles server-side — items POSTed to the API without an aisle land in Miscellaneous. This server assigns aisles locally before sending the item. For every `add_grocery_item` call it tries four stages in order, stopping at the first match:
 
-1. **Your filing history (learned)** — every time you sync, the server fetches your `groceryingredients` table, which records the aisle you filed each ingredient into inside the Paprika app. If the ingredient you're adding (after stripping quantities and parentheticals) matches one of those entries, the learned aisle is used.
-2. **Built-in keyword table (default)** — if no match is found in your history, a curated keyword list covers the most common grocery items (produce, dairy, meat, seafood, frozen, baking, spices, etc.). The matched aisle name is verified against your own aisle list; no aisle is ever invented.
-3. **Miscellaneous** — if neither tier matches, the item is filed under Miscellaneous so it still ends up on the list.
+1. **History** — your Paprika account's learned ingredient-to-aisle table (synced on every refresh). If you've ever filed "kale" under Produce in the app, the next `add_grocery_item("kale")` uses that.
+2. **Modifier** — a form word in the raw input maps directly to an aisle. "canned corn" fires the `canned` modifier → Canned and Jar Goods; "frozen pizza" fires `frozen` → Frozen Foods. Whole-word only, so "cannellini beans" never matches `can`.
+3. **Keyword** — a built-in table of ~250 ingredients targeting Paprika's stock aisle names. Longest keyword wins, so "corn tortillas" → Breads and Cereals, not "corn" → Produce.
+4. **No match** — aisle is left empty; Paprika files it as Miscellaneous.
 
-Your filing history in the Paprika app is picked up automatically on the next background refresh (default: every 30 minutes). The more you organise items in the app, the better the server's suggestions become.
+The tool result and the server log both report which aisle was chosen and which stage found it. Re-filing an item in the Paprika app updates your history and overrides the table on the next refresh.
+
+### Fixing a mis-filed item
+
+1. Test the current resolution offline:
+   ```bash
+   paprika-3-mcp aisles test "canned corn"
+   ```
+   The output shows the stage (`history`, `modifier`, `keyword`, or `no match`), the chosen aisle, and the aisle UID.
+
+2. If the stage is `keyword` or `no match`, add an override to your aisles config:
+   ```
+   ~/Library/Application Support/paprika-3-mcp/aisles.yaml   # macOS
+   ~/.cache/paprika-3-mcp/aisles.yaml                         # Linux
+   ```
+   Add the keyword under the correct aisle:
+   ```yaml
+   keywords:
+     Produce:
+       - canned corn   # moves this keyword from Canned and Jar Goods to Produce
+   ```
+   Run `aisles test` again to confirm. No restart needed — the server picks up the change on the next background refresh.
+
+3. If the stage is `history`, the fix is in the Paprika app: drag the item to the correct aisle once. The corrected mapping syncs on the next refresh.
+
+### Adding or renaming aisles
+
+1. Rename or add the aisle in Paprika (Settings → Grocery Aisles).
+2. Generate a starter config with your live aisle names:
+   ```bash
+   paprika-3-mcp aisles export           # writes aisles.yaml (fails if file exists)
+   paprika-3-mcp aisles export --force   # overwrites an existing file
+   ```
+3. Edit `aisles.yaml` to update any modifier or keyword targets that still reference the old name.
+4. Run `paprika-3-mcp aisles validate` to check for broken references (exits 1 if any found).
+
+### Reference
+
+**Config file location**
+
+| OS | Default path |
+|----|-------------|
+| macOS | `~/Library/Application Support/paprika-3-mcp/aisles.yaml` |
+| Linux | `~/.cache/paprika-3-mcp/aisles.yaml` |
+| Windows | `%LOCALAPPDATA%\paprika-3-mcp\aisles.yaml` |
+
+Override with `--aisles-config <path>` (server) or `PAPRIKA_AISLES_CONFIG` (env var). The env var also works for the `aisles` subcommands.
+
+**Config overlay rules**
+
+The embedded defaults target Paprika's 24 stock aisle names. Your config file is merged on top:
+- `aisles:` — your list **replaces** the default list entirely (used for validation).
+- `modifiers:` — your entries **merge over** the defaults, key by key.
+- `keywords:` — your entries **merge per aisle**. Listing a keyword under aisle X removes it from every other aisle, so one entry is enough to move it.
+
+**Modifiers**
+
+`canned`, `can`, `cans`, `tin`, `tinned`, `jar`, `jarred` → Canned and Jar Goods  
+`frozen` → Frozen Foods  
+`dried`, `dry` → Pasta, Rice and Beans
+
+Matching is whole-word and case-insensitive on the raw ingredient string (before quantity stripping).
+
+**Subcommands**
+
+```bash
+# Test any ingredient string offline
+paprika-3-mcp aisles test "1 (15 oz) can chickpeas"
+
+# Write a starter aisles.yaml with your live Paprika aisle names
+paprika-3-mcp aisles export [--force]
+
+# Validate your aisles.yaml — exits 1 if any aisle is undefined
+paprika-3-mcp aisles validate [--aisles-config <path>]
+```
+
+**Log lines to watch**
+
+Look for `aisle=` and `stage=` in the server log (macOS: `~/Library/Logs/paprika-3-mcp/server.log`). The `aisles config loaded` INFO line at startup shows which file was used, the aisle count, and the keyword count.
 
 ## 🙏 Acknowledgements
 

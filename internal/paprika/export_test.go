@@ -6,10 +6,16 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"github.com/jimternet/paprika-3-mcp/internal/aisles"
 )
 
-// NormalizeIngredient exposes the package-private normalizer for unit tests.
-func NormalizeIngredient(name string) string { return normalizeIngredient(name) }
+// NormalizeIngredient exposes the ingredient normalizer for unit tests.
+// It now delegates to aisles.NormalizeForLookup on the quantity-stripped name.
+func NormalizeIngredient(name string) string {
+	_, cleanName, _ := ExtractQuantity(name)
+	return aisles.NormalizeForLookup(cleanName)
+}
 
 // SetAislesAndIngredients injects aisle/ingredient fixtures into the cache
 // without going through a network Refresh. For tests only.

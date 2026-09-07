@@ -10,6 +10,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/jimternet/paprika-3-mcp/internal/aisles"
 	"github.com/jimternet/paprika-3-mcp/internal/paprika"
 )
 
@@ -40,6 +41,7 @@ type NewServerOptions struct {
 	RateLimitInterval time.Duration
 	CachePath         string
 	RefreshInterval   time.Duration
+	AislesConfigPath  string
 }
 
 func NewServer(opts NewServerOptions) (*Server, error) {
@@ -54,6 +56,21 @@ func NewServer(opts NewServerOptions) (*Server, error) {
 	}
 
 	cache := paprika.NewCache(paprika3, opts.CachePath, opts.Logger)
+
+	// Load aisles config (embedded defaults merged with optional user file).
+	cfg, warnings, err := aisles.Load(opts.AislesConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("load aisles config: %w", err)
+	}
+	for _, w := range warnings {
+		opts.Logger.Warn("aisles config warning", "msg", w)
+	}
+	opts.Logger.Info("aisles config loaded",
+		"path", opts.AislesConfigPath,
+		"aisles", len(cfg.Aisles),
+	)
+	cache.SetAislesConfig(cfg)
+	cache.SetAislesConfigPath(opts.AislesConfigPath)
 
 	s := server.NewMCPServer("paprika-3-mcp", opts.Version, server.WithResourceCapabilities(false, false))
 	return &Server{
@@ -579,23 +596,21 @@ func (s *Server) addGroceryItem(ctx context.Context, req mcp.CallToolRequest) (*
 		}
 	}
 
-	// Extract leading quantity phrase ("2 lbs apples" → qty="2 lbs", clean="apples").
-	// aisleKey preserves container context ("1 can chickpeas" → "can of chickpeas")
-	// so the form-modifier check fires correctly. If the caller supplied an explicit
-	// quantity param, that overrides the extracted one.
-	extractedQty, cleanName, aisleKey := paprika.ExtractQuantity(ingredient)
-	if quantity == "" {
-		quantity = extractedQty
-	}
-
-	// Resolve aisle: uid override > name override > automatic lookup > none.
+	// Resolve aisle: uid override > name override > automatic four-stage lookup > none.
 	var aisleName, aisleUID, aisleReason string
+	var cleanName string
 	switch {
 	case aisleOverrideUID != "":
 		if a, ok := s.cache.AisleByUID(aisleOverrideUID); ok {
 			aisleName = a.Name
 			aisleUID = a.UID
 			aisleReason = "specified"
+		}
+		// Still need cleanName and quantity from the ingredient.
+		extractedQty, cn, _ := paprika.ExtractQuantity(ingredient)
+		cleanName = cn
+		if quantity == "" {
+			quantity = extractedQty
 		}
 	case aisleOverrideName != "":
 		if a, ok := s.cache.AisleByName(aisleOverrideName); ok {
@@ -608,13 +623,26 @@ func (s *Server) addGroceryItem(ctx context.Context, req mcp.CallToolRequest) (*
 			aisleName = aisleOverrideName
 			aisleReason = "specified"
 		}
+		extractedQty, cn, _ := paprika.ExtractQuantity(ingredient)
+		cleanName = cn
+		if quantity == "" {
+			quantity = extractedQty
+		}
 	default:
-		if name, reason := s.cache.LookupIngredientAisle(aisleKey); name != "" {
-			if a, ok := s.cache.AisleByName(name); ok {
+		// Auto-resolve: call four-stage resolver.
+		result := s.cache.ResolveAisle(ingredient)
+		cleanName = result.Name
+		if quantity == "" {
+			quantity = result.Quantity
+		}
+		if result.AisleName != "" {
+			if a, ok := s.cache.AisleByName(result.AisleName); ok {
 				aisleName = a.Name
 				aisleUID = a.UID
-				aisleReason = reason
+			} else {
+				aisleName = result.AisleName
 			}
+			aisleReason = result.Stage
 		}
 	}
 
@@ -645,10 +673,12 @@ func (s *Server) addGroceryItem(ctx context.Context, req mcp.CallToolRequest) (*
 		resultText.WriteString(fmt.Sprintf("- **Quantity**: %s\n", quantity))
 	}
 	switch {
-	case aisleName != "" && aisleReason == "learned":
+	case aisleName != "" && aisleReason == "history":
 		resultText.WriteString(fmt.Sprintf("- **Aisle**: %s _(learned from your history)_\n", aisleName))
-	case aisleName != "" && aisleReason == "default":
-		resultText.WriteString(fmt.Sprintf("- **Aisle**: %s _(default table)_\n", aisleName))
+	case aisleName != "" && aisleReason == "modifier":
+		resultText.WriteString(fmt.Sprintf("- **Aisle**: %s _(form modifier)_\n", aisleName))
+	case aisleName != "" && aisleReason == "keyword":
+		resultText.WriteString(fmt.Sprintf("- **Aisle**: %s _(keyword table)_\n", aisleName))
 	case aisleName != "" && aisleReason == "specified":
 		resultText.WriteString(fmt.Sprintf("- **Aisle**: %s _(specified)_\n", aisleName))
 	default:

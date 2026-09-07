@@ -1,0 +1,514 @@
+aisles:
+  - Baby Products
+  - Bakery
+  - Baking Goods
+  - Breads and Cereals
+  - Beverages
+  - Beer, Wine and Spirits
+  - Canned and Jar Goods
+  - Cleaning Supplies
+  - Dairy
+  - Deli
+  - Frozen Foods
+  - Health and Beauty
+  - Home and Garden
+  - International Cuisine
+  - Meat
+  - Miscellaneous
+  - Oils and Dressings
+  - Pasta, Rice and Beans
+  - Pet Products
+  - Produce
+  - Sauces and Condiments
+  - Spices and Seasonings
+  - Seafood
+  - Snacks
+
+modifiers:
+  canned: Canned and Jar Goods
+  can: Canned and Jar Goods
+  cans: Canned and Jar Goods
+  tin: Canned and Jar Goods
+  tinned: Canned and Jar Goods
+  jar: Canned and Jar Goods
+  jarred: Canned and Jar Goods
+  frozen: Frozen Foods
+  dried: Pasta, Rice and Beans
+  dry: Pasta, Rice and Beans
+
+keywords:
+  Produce:
+    # Multi-word
+    - green beans
+    - bell pepper
+    - sweet potato
+    # Single-word
+    - apple
+    - apricot
+    - asparagus
+    - avocado
+    - banana
+    - basil
+    - beet
+    - blueberry
+    - broccoli
+    - brussels
+    - cabbage
+    - cantaloupe
+    - carrot
+    - cauliflower
+    - celery
+    - cherry
+    - cilantro
+    - corn
+    - cucumber
+    - dill
+    - eggplant
+    - fennel
+    - garlic
+    - ginger
+    - grape
+    - grapefruit
+    - jalapeno
+    - jalapeño
+    - kale
+    - kiwi
+    - leek
+    - lemon
+    - lettuce
+    - lime
+    - mango
+    - melon
+    - mint
+    - mushroom
+    - onion
+    - orange
+    - parsley
+    - peach
+    - pear
+    - pineapple
+    - plum
+    - potato
+    - pumpkin
+    - radish
+    - raspberry
+    - rosemary
+    - scallion
+    - shallot
+    - spinach
+    - squash
+    - strawberry
+    - thyme
+    - tomato
+    - turnip
+    - watercress
+    - watermelon
+    - yam
+    - zucchini
+    - tofu
+    - tempeh
+    - seitan
+    - miso
+
+  Pasta, Rice and Beans:
+    # Multi-word (must come before single-word)
+    - black beans
+    - kidney beans
+    - pinto beans
+    - cannellini beans
+    - garbanzo beans
+    - navy beans
+    - split peas
+    - egg noodles
+    # Single-word
+    - pasta
+    - rice
+    - quinoa
+    - couscous
+    - lentils
+    - chickpeas
+    - oats
+    - farro
+    - barley
+    - polenta
+
+  Canned and Jar Goods:
+    # Multi-word (must come before single-word)
+    - coconut milk
+    - almond milk
+    - oat milk
+    - tomato paste
+    - tomato sauce
+    - diced tomatoes
+    - crushed tomatoes
+    - vegetable broth
+    - vegetable stock
+    - chicken broth
+    - beef broth
+    - chicken stock
+    - beef stock
+    - refried beans
+    - applesauce
+    - apple sauce
+    - pumpkin puree
+    - tomato puree
+    - whole tomatoes
+    - canned tomatoes
+    - baked beans
+    - pasta sauce
+    # Single-word
+    - olives
+    - pickles
+
+  Oils and Dressings:
+    # Multi-word
+    - olive oil
+    - sesame oil
+    - rice vinegar
+    - avocado oil
+    - coconut oil
+    - vegetable oil
+    - salad dressing
+    # Single-word
+    - vinegar
+    - tahini
+    - mayonnaise
+    - ranch
+
+  Sauces and Condiments:
+    # Multi-word
+    - peanut butter
+    - almond butter
+    - hot sauce
+    - soy sauce
+    - BBQ sauce
+    - cashew butter
+    # Single-word
+    - tamari
+    - ketchup
+    - mustard
+    - sriracha
+    - worcestershire
+    - salsa
+    - hummus
+    - relish
+
+  Spices and Seasonings:
+    # Multi-word
+    - garlic powder
+    - onion powder
+    - chili powder
+    - chili flakes
+    - red pepper flakes
+    - bay leaves
+    - sea salt
+    - black pepper
+    - salt and pepper
+    - smoked paprika
+    - garam masala
+    - italian seasoning
+    # Single-word
+    - salt
+    - pepper
+    - cumin
+    - paprika
+    - turmeric
+    - cinnamon
+    - oregano
+    - cayenne
+    - nutmeg
+    - cloves
+    - cardamom
+    - curry
+    - saffron
+    - bouillon
+    - coriander
+    - allspice
+
+  Baking Goods:
+    # Multi-word
+    - baking powder
+    - baking soda
+    - corn starch
+    - cornstarch
+    - corn syrup
+    - maple syrup
+    - brown sugar
+    - powdered sugar
+    - confectioners sugar
+    - bread flour
+    - cake flour
+    - all purpose flour
+    - whole wheat flour
+    - cocoa powder
+    - chocolate chips
+    - cream of tartar
+    - vanilla extract
+    - almond extract
+    - agave syrup
+    - nutritional yeast
+    - food coloring
+    # Single-word
+    - flour
+    - sugar
+    - yeast
+    - honey
+    - oatmeal
+    - shortening
+    - molasses
+    - gelatin
+    - agave
+    - cocoa
+
+  Breads and Cereals:
+    # Multi-word
+    - corn tortillas
+    - flour tortillas
+    - english muffins
+    - hamburger buns
+    - hot dog buns
+    - dinner rolls
+    - bread crumbs
+    - sourdough bread
+    - whole wheat bread
+    - white bread
+    # Single-word
+    - bread
+    - bagel
+    - tortilla
+    - cereal
+    - granola
+    - crackers
+    - panko
+    - baguette
+    - pita
+    - naan
+    - flatbread
+
+  Bakery:
+    # Multi-word
+    - pie crust
+    - pizza dough
+    - croissants
+    # Single-word
+    - muffin
+    - scone
+    - pastry
+    - cake
+    - donut
+
+  Dairy:
+    # Multi-word
+    - cream cheese
+    - sour cream
+    - half and half
+    - heavy cream
+    - greek yogurt
+    - whipped cream
+    - cottage cheese
+    # Single-word
+    - milk
+    - cheese
+    - butter
+    - egg
+    - yogurt
+    - cream
+    - kefir
+    - ghee
+    - cheddar
+    - mozzarella
+    - parmesan
+    - feta
+    - gouda
+    - ricotta
+    - provolone
+
+  Deli:
+    # Multi-word
+    - deli meat
+    - smoked salmon
+    - sliced cheese
+    - prepared salad
+    # Single-word
+    - prosciutto
+    - salami
+    - pepperoni
+    - lox
+
+  Frozen Foods:
+    # Multi-word
+    - frozen pizza
+    - frozen meal
+    - frozen dinner
+    - frozen vegetable
+    - frozen vegetables
+    - frozen fruit
+    - frozen burritos
+    - frozen peas
+    - veggie burger
+    - frozen meals
+    - frozen dinners
+    - fish sticks
+    - tater tots
+    - frozen yogurt
+    - ice cream
+    - pot pie
+    # Single-word
+    - edamame
+
+  Snacks:
+    # Multi-word
+    - mixed nuts
+    - trail mix
+    - granola bars
+    - granola bar
+    - dried fruit
+    - corn chips
+    - dried cranberries
+    - rice cakes
+    - protein bar
+    - energy bar
+    # Single-word
+    - chips
+    - popcorn
+    - pretzels
+    - nuts
+    - almonds
+    - cashews
+    - peanuts
+    - walnuts
+    - pecans
+    - candy
+    - chocolate
+    - raisins
+    - jerky
+
+  Beverages:
+    # Multi-word
+    - orange juice
+    - lemon juice
+    - sparkling water
+    - coconut water
+    - apple juice
+    - cranberry juice
+    - grape juice
+    - tomato juice
+    - sports drink
+    - energy drink
+    - protein shake
+    # Single-word
+    - coffee
+    - tea
+    - soda
+    - kombucha
+    - juice
+    - water
+
+  Beer, Wine and Spirits:
+    - beer
+    - wine
+    - spirits
+    - champagne
+
+  Meat:
+    # Multi-word
+    - ground beef
+    - ground pork
+    - ground turkey
+    # Single-word
+    - chicken
+    - beef
+    - pork
+    - turkey
+    - sausage
+    - bacon
+    - lamb
+    - ham
+    - veal
+    - chorizo
+    - steak
+    - venison
+
+  Seafood:
+    - salmon
+    - tuna
+    - shrimp
+    - crab
+    - fish
+    - lobster
+    - oyster
+    - scallop
+    - tilapia
+    - clam
+
+  International Cuisine:
+    # Multi-word
+    - curry paste
+    - red curry paste
+    - green curry paste
+    - miso paste
+    - rice noodles
+    - coconut aminos
+    - rice wine vinegar
+    # Single-word
+    - gochujang
+    - kimchi
+    - nori
+    - mirin
+    - sake
+    - harissa
+    - sambal
+
+  Cleaning Supplies:
+    # Multi-word
+    - dish soap
+    - laundry detergent
+    - paper towels
+    - toilet paper
+    - trash bags
+    - aluminum foil
+    - plastic wrap
+    - parchment paper
+    - ziploc bags
+    - zip lock bags
+    - dishwasher pods
+    - hand soap
+    # Single-word
+    - sponge
+
+  Home and Garden:
+    # Multi-word
+    - light bulb
+    - potting soil
+    # Single-word
+    - batteries
+    - candles
+    - plants
+
+  Health and Beauty:
+    # Multi-word
+    - body wash
+    # Single-word
+    - shampoo
+    - conditioner
+    - toothpaste
+    - toothbrush
+    - deodorant
+    - vitamins
+    - medicine
+    - sunscreen
+    - lotion
+
+  Pet Products:
+    # Multi-word
+    - dog food
+    - cat food
+    - cat litter
+    - pet treats
+    # Single-word
+    - kibble
+
+  Baby Products:
+    - diapers
+    - wipes
+    - formula

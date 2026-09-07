@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/jimternet/paprika-3-mcp/internal/aisles"
 )
 
 type cachedRecipe struct {
@@ -29,17 +31,20 @@ type cacheSnapshot struct {
 
 // Cache is a hash-keyed, disk-persisted recipe cache. It is safe for concurrent use.
 type Cache struct {
-	mu          sync.RWMutex
-	refreshMu   sync.Mutex // serialises concurrent Refresh calls
-	recipes     map[string]cachedRecipe // keyed by UID, uppercase
-	aisles      []GroceryAisle          // ordered by OrderFlag
-	ingredients []GroceryIngredient     // user's learned ingredient→aisle table
-	client      *Client
-	path        string // path to persisted snapshot
-	logger      *slog.Logger
-	lastSync    time.Time
-	firstFill   atomic.Bool // true after an empty Load; cleared after first Refresh
-	filling     atomic.Bool // true while the first Refresh is running
+	mu               sync.RWMutex
+	refreshMu        sync.Mutex // serialises concurrent Refresh calls
+	recipes          map[string]cachedRecipe // keyed by UID, uppercase
+	aisles           []GroceryAisle          // ordered by OrderFlag
+	ingredients      []GroceryIngredient     // user's learned ingredient→aisle table
+	client           *Client
+	path             string // path to persisted snapshot
+	logger           *slog.Logger
+	lastSync         time.Time
+	firstFill        atomic.Bool // true after an empty Load; cleared after first Refresh
+	filling          atomic.Bool // true while the first Refresh is running
+	aislesConfig     atomic.Pointer[aisles.Config]
+	aislesConfigPath string
+	aislesConfigMtime time.Time // protected by refreshMu
 }
 
 // NewCache creates a new Cache backed by client, persisted to path.
@@ -233,6 +238,24 @@ func (c *Cache) Refresh(ctx context.Context) error {
 		}
 	}
 
+	// Reload aisles config if the file changed since last load.
+	if c.aislesConfigPath != "" {
+		if info, err := os.Stat(c.aislesConfigPath); err == nil {
+			if info.ModTime().After(c.aislesConfigMtime) {
+				if cfg, warnings, err := aisles.Load(c.aislesConfigPath); err == nil {
+					for _, w := range warnings {
+						c.logger.Warn("aisles config warning", "msg", w)
+					}
+					c.aislesConfig.Store(cfg)
+					c.aislesConfigMtime = info.ModTime()
+					c.logger.Info("aisles config reloaded", "path", c.aislesConfigPath)
+				} else {
+					c.logger.Error("failed to reload aisles config", "path", c.aislesConfigPath, "err", err)
+				}
+			}
+		}
+	}
+
 	// Fetch aisles and ingredients; non-fatal so a missing endpoint (e.g. in
 	// tests or older API versions) does not abort the recipe sync.
 	if aisleResp, err := c.client.GetGroceryAisles(ctx); err != nil {
@@ -389,6 +412,55 @@ func (c *Cache) AisleByUID(uid string) (GroceryAisle, bool) {
 		}
 	}
 	return GroceryAisle{}, false
+}
+
+// SetAislesConfig stores the aisles config atomically.
+func (c *Cache) SetAislesConfig(cfg *aisles.Config) {
+	c.aislesConfig.Store(cfg)
+}
+
+// SetAislesConfigPath sets the path for live-reload checks.
+func (c *Cache) SetAislesConfigPath(path string) {
+	c.aislesConfigPath = path
+}
+
+// ResolveAisle resolves the best aisle for a raw ingredient string using the
+// four-stage resolver: history → modifier → keyword → no match.
+func (c *Cache) ResolveAisle(raw string) aisles.Result {
+	qty, cleanName, _ := ExtractQuantity(raw)
+
+	c.mu.RLock()
+	liveAisles := make([]aisles.LiveAisle, len(c.aisles))
+	for i, a := range c.aisles {
+		liveAisles[i] = aisles.LiveAisle{Name: a.Name, UID: a.UID}
+	}
+	ingredients := make([]GroceryIngredient, len(c.ingredients))
+	copy(ingredients, c.ingredients)
+	c.mu.RUnlock()
+
+	cfg := c.aislesConfig.Load()
+
+	// Build UID→name lookup from live aisles.
+	uidToName := make(map[string]string, len(liveAisles))
+	for _, la := range liveAisles {
+		uidToName[la.UID] = la.Name
+	}
+
+	// Build normalized history.
+	history := make([]aisles.HistoryItem, 0, len(ingredients))
+	for _, ing := range ingredients {
+		if n, ok := uidToName[ing.AisleUID]; ok {
+			_, ingClean, _ := ExtractQuantity(ing.Name)
+			norm := aisles.NormalizeForLookup(ingClean)
+			history = append(history, aisles.HistoryItem{
+				NormalizedName: norm,
+				AisleName:      n,
+				AisleUID:       ing.AisleUID,
+			})
+		}
+	}
+
+	return aisles.Resolve(raw, cleanName, qty, cfg, history, liveAisles)
 }
 
 // AisleByName returns the aisle whose name matches (case-insensitive), or false.
