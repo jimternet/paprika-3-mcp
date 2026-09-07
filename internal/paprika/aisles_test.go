@@ -297,6 +297,67 @@ func TestLookupQuantityVariants(t *testing.T) {
 	}
 }
 
+// TestAisleAliasResolution verifies that resolveAisleName matches user aisles
+// with non-canonical names via the aisleAliases table.
+func TestAisleAliasResolution(t *testing.T) {
+	// Build a cache whose aisles use alternate names instead of the canonical ones.
+	aliasAisles := []paprika.GroceryAisle{
+		{UID: "a-canned", Name: "Canned & Jarred", OrderFlag: 1},
+		{UID: "a-frozen", Name: "Frozen Foods", OrderFlag: 2},
+		{UID: "a-produce", Name: "Fruits & Vegetables", OrderFlag: 3},
+		{UID: "a-dairy", Name: "Dairy & Eggs", OrderFlag: 4},
+		{UID: "a-bakery", Name: "Bread", OrderFlag: 5},
+		{UID: "a-spices", Name: "Spices & Seasonings", OrderFlag: 6},
+	}
+	dir := t.TempDir()
+	cache := paprika.NewCache(nil, dir+"/recipes.json", nil)
+	cache.SetAislesAndIngredients(aliasAisles, nil)
+
+	cases := []struct {
+		input     string
+		wantAisle string
+	}{
+		{"canned corn", "Canned & Jarred"},   // modifier "canned" → alias "Canned & Jarred"
+		{"frozen peas", "Frozen Foods"},       // modifier "frozen" → alias "Frozen Foods"
+		{"apple", "Fruits & Vegetables"},      // keyword "apple" → alias "Fruits & Vegetables"
+		{"milk", "Dairy & Eggs"},              // keyword "milk" → alias "Dairy & Eggs"
+		{"corn tortillas", "Bread"},           // keyword "corn tortillas" → alias "Bread"
+		{"cumin", "Spices & Seasonings"},      // keyword "cumin" → alias "Spices & Seasonings"
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			gotAisle, gotReason := cache.LookupIngredientAisle(tc.input)
+			assert.Equal(t, tc.wantAisle, gotAisle)
+			assert.Equal(t, "default", gotReason)
+		})
+	}
+}
+
+// TestModifierFallThrough verifies that when a form modifier fires but the
+// target aisle is not in the user's list, lookup falls through to the keyword
+// table rather than returning no match.
+func TestModifierFallThrough(t *testing.T) {
+	// User only has Produce — no Frozen or Canned Goods.
+	produceOnly := []paprika.GroceryAisle{
+		{UID: "a-produce", Name: "Produce", OrderFlag: 1},
+	}
+	dir := t.TempDir()
+	cache := paprika.NewCache(nil, dir+"/recipes.json", nil)
+	cache.SetAislesAndIngredients(produceOnly, nil)
+
+	// "frozen corn": modifier "frozen" fires, Frozen not available → fall through
+	// → keyword "corn" → Produce.
+	aisle, reason := cache.LookupIngredientAisle("frozen corn")
+	assert.Equal(t, "Produce", aisle)
+	assert.Equal(t, "default", reason)
+
+	// "canned corn": modifier "canned" fires, Canned Goods not available → fall
+	// through → keyword "corn" → Produce.
+	aisle, reason = cache.LookupIngredientAisle("canned corn")
+	assert.Equal(t, "Produce", aisle)
+	assert.Equal(t, "default", reason)
+}
+
 // Ensure IsFilling does not get stuck true after a refresh with fixture data.
 func TestIsFillingClears(t *testing.T) {
 	cache := newFixtureCache(t)

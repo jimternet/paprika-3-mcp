@@ -8,6 +8,22 @@ package paprika
 // time; if the user does not have a matching aisle the entry is skipped.
 // To extend, add entries here; the canonical name should match what Paprika
 // commonly uses (Produce, Dairy, Meat, etc.).
+// aisleAliases maps canonical aisle names (as used in the keyword/modifier
+// tables) to alternate names a user might give the same aisle in Paprika.
+// resolveAisleName tries the canonical name first, then each alias.
+// All comparisons are case-insensitive.
+var aisleAliases = map[string][]string{
+	"Canned Goods": {"Canned", "Canned & Jarred", "Cans", "Jarred Goods"},
+	"Baking":       {"Baking Goods"},
+	"Spices":       {"Spices & Seasonings", "Seasonings"},
+	"Bakery":       {"Bread", "Bread & Bakery"},
+	"Frozen":       {"Frozen Foods"},
+	"Snacks":       {"Chips & Snacks"},
+	"Dairy":        {"Dairy & Eggs"},
+	"Meat":         {"Meat & Seafood"},
+	"Produce":      {"Fruits & Vegetables"},
+}
+
 var defaultAisleKeywords = []struct{ keyword, aisle string }{
 	// ── Multi-word (checked before single-word to avoid false matches) ──────
 

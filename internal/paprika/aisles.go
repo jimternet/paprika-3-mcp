@@ -110,11 +110,13 @@ func wordMatch(name, keyword string) bool {
 //  1. Exact match in the user's groceryingredients table.
 //  2. Singular/plural variants of the normalized name.
 //  3. Form modifier check: "canned X" → Canned Goods, "frozen X" → Frozen, etc.
+//     If the modifier's aisle can't be resolved (even via aliases), falls through
+//     to the keyword table rather than returning no match.
 //  4. Built-in keyword table (defaultAisleKeywords in aisles_default.go),
 //     longest keyword match wins.
 //
-// Aisle names are verified against the user's actual aisle list; no aisle is
-// ever invented.
+// Aisle names are resolved via aisleAliases so that e.g. "Canned & Jarred"
+// matches the canonical "Canned Goods". No aisle is ever invented.
 func (c *Cache) LookupIngredientAisle(name string) (aisleName, reason string) {
 	normalized := normalizeIngredient(name)
 
@@ -125,6 +127,16 @@ func (c *Cache) LookupIngredientAisle(name string) (aisleName, reason string) {
 	copy(ingredients, c.ingredients)
 	c.mu.RUnlock()
 
+	// stage is set before each return and emitted by the deferred log.
+	var stage string
+	defer func() {
+		if aisleName != "" {
+			c.logger.Debug("aisle lookup", "ingredient", name, "stage", stage, "aisle", aisleName)
+		} else {
+			c.logger.Debug("aisle lookup", "ingredient", name, "stage", "none")
+		}
+	}()
+
 	uidToName := func(uid string) string {
 		for _, a := range aisles {
 			if a.UID == uid {
@@ -134,11 +146,22 @@ func (c *Cache) LookupIngredientAisle(name string) (aisleName, reason string) {
 		return ""
 	}
 
+	// resolveAisleName looks up candidate in the user's aisle list (case-insensitive),
+	// then tries each alias from aisleAliases so that e.g. "Canned Goods" also
+	// matches a user aisle named "Canned & Jarred".
 	resolveAisleName := func(candidate string) (string, bool) {
 		lower := strings.ToLower(candidate)
 		for _, a := range aisles {
 			if strings.ToLower(a.Name) == lower {
 				return a.Name, true
+			}
+		}
+		for _, alias := range aisleAliases[candidate] {
+			aliasLower := strings.ToLower(alias)
+			for _, a := range aisles {
+				if strings.ToLower(a.Name) == aliasLower {
+					return a.Name, true
+				}
 			}
 		}
 		return "", false
@@ -148,6 +171,7 @@ func (c *Cache) LookupIngredientAisle(name string) (aisleName, reason string) {
 	for _, ing := range ingredients {
 		if strings.ToLower(ing.Name) == normalized {
 			if n := uidToName(ing.AisleUID); n != "" {
+				stage = "learned"
 				return n, "learned"
 			}
 		}
@@ -158,6 +182,7 @@ func (c *Cache) LookupIngredientAisle(name string) (aisleName, reason string) {
 		for _, ing := range ingredients {
 			if strings.ToLower(ing.Name) == variant {
 				if n := uidToName(ing.AisleUID); n != "" {
+					stage = "learned-variant"
 					return n, "learned"
 				}
 			}
@@ -165,8 +190,8 @@ func (c *Cache) LookupIngredientAisle(name string) (aisleName, reason string) {
 	}
 
 	// Form modifier check: "canned X" → Canned Goods, "frozen X" → Frozen, etc.
-	// Runs before the keyword table and overrides ingredient-based lookup.
-	// "fresh" explicitly delegates to keyword lookup (nil aisles slice).
+	// Runs before the keyword table. "fresh" explicitly falls through (nil aisles).
+	// If the modifier's aisles can't be resolved, fall through to keyword table.
 	for _, fm := range formModifiers {
 		if normalized != fm.prefix && !strings.HasPrefix(normalized, fm.prefix+" ") {
 			continue
@@ -176,11 +201,15 @@ func (c *Cache) LookupIngredientAisle(name string) (aisleName, reason string) {
 		}
 		for _, candidate := range fm.aisles {
 			if n, ok := resolveAisleName(candidate); ok {
+				stage = "modifier"
 				return n, "default"
 			}
 		}
-		// Modifier matched but none of its aisles exist in the user's list.
-		return "", ""
+		// Modifier matched but none of its aisles exist in the user's list —
+		// fall through to keyword table rather than returning no match.
+		c.logger.Debug("aisle modifier unresolved — falling through to keyword table",
+			"ingredient", name, "modifier", fm.prefix)
+		break
 	}
 
 	// Tier 3: built-in keyword table — longest keyword match wins so that
@@ -206,6 +235,7 @@ func (c *Cache) LookupIngredientAisle(name string) (aisleName, reason string) {
 		}
 	}
 	if best != nil {
+		stage = "keyword"
 		return best.aisle, "default"
 	}
 

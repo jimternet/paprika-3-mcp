@@ -241,6 +241,11 @@ func (c *Cache) Refresh(ctx context.Context) error {
 		c.mu.Lock()
 		c.aisles = aisleResp.Result
 		c.mu.Unlock()
+		names := make([]string, len(aisleResp.Result))
+		for i, a := range aisleResp.Result {
+			names[i] = a.Name
+		}
+		c.logger.Info("grocery aisles synced", "count", len(aisleResp.Result), "names", strings.Join(names, ", "))
 	}
 	if ingResp, err := c.client.GetGroceryIngredients(ctx); err != nil {
 		c.logger.Warn("failed to fetch grocery ingredients; keeping cached values", "error", err)
