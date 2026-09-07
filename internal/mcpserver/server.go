@@ -579,6 +579,15 @@ func (s *Server) addGroceryItem(ctx context.Context, req mcp.CallToolRequest) (*
 		}
 	}
 
+	// Extract leading quantity phrase ("2 lbs apples" → qty="2 lbs", clean="apples").
+	// aisleKey preserves container context ("1 can chickpeas" → "can of chickpeas")
+	// so the form-modifier check fires correctly. If the caller supplied an explicit
+	// quantity param, that overrides the extracted one.
+	extractedQty, cleanName, aisleKey := paprika.ExtractQuantity(ingredient)
+	if quantity == "" {
+		quantity = extractedQty
+	}
+
 	// Resolve aisle: uid override > name override > automatic lookup > none.
 	var aisleName, aisleUID, aisleReason string
 	switch {
@@ -600,7 +609,7 @@ func (s *Server) addGroceryItem(ctx context.Context, req mcp.CallToolRequest) (*
 			aisleReason = "specified"
 		}
 	default:
-		if name, reason := s.cache.LookupIngredientAisle(ingredient); name != "" {
+		if name, reason := s.cache.LookupIngredientAisle(aisleKey); name != "" {
 			if a, ok := s.cache.AisleByName(name); ok {
 				aisleName = a.Name
 				aisleUID = a.UID
@@ -610,8 +619,8 @@ func (s *Server) addGroceryItem(ctx context.Context, req mcp.CallToolRequest) (*
 	}
 
 	item := paprika.GroceryItem{
-		Ingredient:  ingredient,
-		Name:        ingredient,
+		Ingredient:  cleanName,
+		Name:        cleanName,
 		ListUID:     listUID,
 		Aisle:       aisleName,
 		AisleUID:    aisleUID,
@@ -626,12 +635,12 @@ func (s *Server) addGroceryItem(ctx context.Context, req mcp.CallToolRequest) (*
 	}
 
 	duration := time.Since(start)
-	s.logger.Info("added grocery item", "ingredient", ingredient, "aisle", aisleName, "reason", aisleReason, "duration", duration)
+	s.logger.Info("added grocery item", "ingredient", cleanName, "aisle", aisleName, "reason", aisleReason, "duration", duration)
 
 	var resultText strings.Builder
 	resultText.WriteString("# Grocery Item Added Successfully\n\n")
-	resultText.WriteString(fmt.Sprintf("Added **%s** to your grocery list\n\n", ingredient))
-	resultText.WriteString(fmt.Sprintf("- **Item**: %s\n", ingredient))
+	resultText.WriteString(fmt.Sprintf("Added **%s** to your grocery list\n\n", cleanName))
+	resultText.WriteString(fmt.Sprintf("- **Item**: %s\n", cleanName))
 	if quantity != "" {
 		resultText.WriteString(fmt.Sprintf("- **Quantity**: %s\n", quantity))
 	}

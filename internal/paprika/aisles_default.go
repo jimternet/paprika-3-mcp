@@ -18,6 +18,7 @@ var aisleAliases = map[string][]string{
 	"Spices":       {"Spices & Seasonings", "Seasonings"},
 	"Bakery":       {"Bread", "Bread & Bakery"},
 	"Frozen":       {"Frozen Foods"},
+	"Pantry":       {"Dry Goods", "Pantry Staples", "Dry Goods & Staples", "Staples"},
 	"Snacks":       {"Chips & Snacks"},
 	"Dairy":        {"Dairy & Eggs"},
 	"Meat":         {"Meat & Seafood"},
@@ -61,14 +62,17 @@ var defaultAisleKeywords = []struct{ keyword, aisle string }{
 	{"crushed tomatoes", "Canned Goods"},
 	{"whole tomatoes", "Canned Goods"},
 	{"tomato puree", "Canned Goods"},
-	{"black beans", "Canned Goods"},
-	{"kidney beans", "Canned Goods"},
-	{"chickpeas", "Canned Goods"},
-	{"garbanzo beans", "Canned Goods"},
-	{"pinto beans", "Canned Goods"},
+	{"cannellini beans", "Pantry"},
+	{"navy beans", "Pantry"},
+	{"black beans", "Pantry"},
+	{"kidney beans", "Pantry"},
+	{"chickpeas", "Pantry"},
+	{"garbanzo beans", "Pantry"},
+	{"pinto beans", "Pantry"},
+	{"split peas", "Pantry"},
+	{"lentils", "Pantry"},
 	{"baked beans", "Canned Goods"},
 	{"refried beans", "Canned Goods"},
-	{"lentils", "Canned Goods"},
 	{"corn niblets", "Canned Goods"},
 	{"green beans", "Canned Goods"},
 	{"canned tuna", "Canned Goods"},
@@ -78,6 +82,12 @@ var defaultAisleKeywords = []struct{ keyword, aisle string }{
 	{"pumpkin puree", "Canned Goods"},
 	{"apple sauce", "Canned Goods"},
 	{"applesauce", "Canned Goods"},
+
+	// Pantry staples
+	{"pasta", "Pantry"},
+	{"rice", "Pantry"},
+	{"quinoa", "Pantry"},
+	{"nutritional yeast", "Baking"},
 
 	// Bakery
 	{"corn tortillas", "Bakery"},
@@ -232,6 +242,12 @@ var defaultAisleKeywords = []struct{ keyword, aisle string }{
 	{"whipped cream", "Dairy"},
 	{"yogurt", "Dairy"},
 
+	// Plant-based proteins / refrigerated
+	{"tofu", "Produce"},
+	{"tempeh", "Produce"},
+	{"seitan", "Produce"},
+	{"miso", "Produce"},
+
 	// Meat
 	{"bacon", "Meat"},
 	{"beef", "Meat"},
@@ -314,6 +330,8 @@ var defaultAisleKeywords = []struct{ keyword, aisle string }{
 	{"sesame oil", "Condiments"},
 	{"salsa", "Condiments"},
 	{"ranch", "Condiments"},
+	{"tahini", "Condiments"},
+	{"tamari", "Condiments"},
 
 	// Snacks
 	{"chips", "Snacks"},

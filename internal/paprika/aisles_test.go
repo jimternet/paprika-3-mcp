@@ -21,6 +21,7 @@ var fixtureAisles = []paprika.GroceryAisle{
 	{UID: "a-snacks", Name: "Snacks", OrderFlag: 9},
 	{UID: "a-beverages", Name: "Beverages", OrderFlag: 10},
 	{UID: "a-condiments", Name: "Condiments", OrderFlag: 11},
+	{UID: "a-pantry", Name: "Pantry", OrderFlag: 12},
 }
 
 var fixtureIngredients = []paprika.GroceryIngredient{
@@ -28,7 +29,6 @@ var fixtureIngredients = []paprika.GroceryIngredient{
 	{UID: "i-2", Name: "milk", AisleUID: "a-dairy"},
 	{UID: "i-3", Name: "chicken breast", AisleUID: "a-meat"},
 	{UID: "i-4", Name: "cheddar cheese", AisleUID: "a-dairy"},
-	{UID: "i-5", Name: "pasta", AisleUID: "a-canned"},
 }
 
 // newFixtureCache builds an in-memory cache loaded with the fixture aisles
@@ -204,6 +204,57 @@ func TestLookupIngredientAisle(t *testing.T) {
 			name:       "flour via baking keyword",
 			input:      "all purpose flour",
 			wantAisle:  "Baking",
+			wantReason: "default",
+		},
+
+		// Legumes — dry default → Pantry; canned modifier → Canned Goods
+		{
+			name:       "black beans bare → Pantry",
+			input:      "black beans",
+			wantAisle:  "Pantry",
+			wantReason: "default",
+		},
+		{
+			name:       "canned black beans → Canned Goods",
+			input:      "canned black beans",
+			wantAisle:  "Canned Goods",
+			wantReason: "default",
+		},
+		{
+			name:       "chickpeas bare → Pantry",
+			input:      "chickpeas",
+			wantAisle:  "Pantry",
+			wantReason: "default",
+		},
+		{
+			name:       "lentils bare → Pantry",
+			input:      "lentils",
+			wantAisle:  "Pantry",
+			wantReason: "default",
+		},
+		{
+			name:       "pasta bare → Pantry",
+			input:      "pasta",
+			wantAisle:  "Pantry",
+			wantReason: "default",
+		},
+		{
+			name:       "rice bare → Pantry",
+			input:      "rice",
+			wantAisle:  "Pantry",
+			wantReason: "default",
+		},
+		{
+			name:       "quinoa bare → Pantry",
+			input:      "quinoa",
+			wantAisle:  "Pantry",
+			wantReason: "default",
+		},
+		// Article stripping
+		{
+			name:       "a can of black beans → Canned Goods via article strip + modifier",
+			input:      "a can of black beans",
+			wantAisle:  "Canned Goods",
 			wantReason: "default",
 		},
 

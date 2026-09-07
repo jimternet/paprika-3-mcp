@@ -5,14 +5,18 @@ import (
 	"strings"
 )
 
-// normalizeIngredient lowercases, trims, strips leading quantities/units
-// ("2 lbs apples" → "apples"), and strips trailing parentheticals ("milk (whole)" → "milk").
+// normalizeIngredient lowercases, trims, strips leading articles ("a", "an"),
+// strips leading quantities/units ("2 lbs apples" → "apples"), and strips
+// trailing parentheticals ("milk (whole)" → "milk").
 func normalizeIngredient(name string) string {
 	s := strings.ToLower(strings.TrimSpace(name))
+	s = leadingArticleRe.ReplaceAllString(s, "")
 	s = leadingQuantityRe.ReplaceAllString(s, "")
 	s = trailingParenRe.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
 }
+
+var leadingArticleRe = regexp.MustCompile(`(?i)^(?:a|an)\s+`)
 
 // leadingQuantityRe matches an optional number followed by a unit word at the
 // start of the string, e.g. "2 lbs ", "1/2 cup ", "3 cans ".
