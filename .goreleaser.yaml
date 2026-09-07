@@ -47,7 +47,7 @@ changelog:
       - '^test:'
       - '^chore:'
 
-homebrew:
+brews:
   - name: paprika-3-mcp
     repository:
       owner: jimternet
