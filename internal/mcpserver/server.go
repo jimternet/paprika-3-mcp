@@ -2,16 +2,20 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 	"github.com/jimternet/paprika-3-mcp/internal/aisles"
 	"github.com/jimternet/paprika-3-mcp/internal/paprika"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
 
 // PaprikaClient defines the interface for interacting with the Paprika API.
@@ -28,6 +32,20 @@ type PaprikaClient interface {
 	ListGroceryLists(ctx context.Context) (*paprika.GroceryListResponse, error)
 	SaveGroceryItem(ctx context.Context, item paprika.GroceryItem) (*paprika.GroceryItem, error)
 	DeleteGroceryItem(ctx context.Context, uid string) error
+}
+
+type photoClient interface {
+	ListPhotos(context.Context) (*paprika.PhotoResponse, error)
+	UploadPhoto(context.Context, string, []byte) (*paprika.Photo, error)
+	DeletePhoto(context.Context, paprika.Photo) error
+	SavePhoto(context.Context, paprika.Photo) error
+	SetPrimaryPhoto(context.Context, string, paprika.Photo) error
+}
+
+type categoryClient interface {
+	ListCategories(context.Context) (*paprika.CategoryResponse, error)
+	SaveCategory(context.Context, paprika.Category) (*paprika.Category, error)
+	DeleteCategory(context.Context, paprika.Category) error
 }
 
 // defaultRefreshInterval is the default background cache refresh interval.
@@ -133,6 +151,14 @@ func (s *Server) Start() {
 		mcp.WithString("source", mcp.Description("The source of the recipe"), mcp.DefaultString("")),
 		mcp.WithString("source_url", mcp.Description("The URL of the source of the recipe"), mcp.DefaultString("")),
 		mcp.WithString("difficulty", mcp.Description("The difficulty of the recipe"), mcp.DefaultString("")),
+		mcp.WithString("categories", mcp.Description("Comma-separated category names to assign"), mcp.DefaultString("")),
+		mcp.WithString("nutritional_info", mcp.Description("Nutritional information"), mcp.DefaultString("")),
+		mcp.WithString("total_time", mcp.Description("Total preparation/cooking time"), mcp.DefaultString("")),
+		mcp.WithString("scale", mcp.Description("Recipe scaling factor"), mcp.DefaultString("")),
+		mcp.WithString("image_url", mcp.Description("External recipe image URL"), mcp.DefaultString("")),
+		mcp.WithNumber("rating", mcp.Description("Rating from 0 to 5"), mcp.DefaultNumber(0)),
+		mcp.WithBoolean("on_favorites", mcp.Description("Add to favorites")),
+		mcp.WithBoolean("is_pinned", mcp.Description("Pin the recipe")),
 	)
 	updateRecipeTool := mcp.NewTool("update_paprika_recipe",
 		mcp.WithDescription("Update existing recipes in the Paprika 3 app. Only uid is required; all other fields are optional and will be merged into the existing recipe — fields not provided are preserved as-is. If the recipe is not in the local cache, run refresh_recipes first."),
@@ -148,6 +174,14 @@ func (s *Server) Start() {
 		mcp.WithString("source", mcp.Description("The source of the recipe"), mcp.DefaultString("")),
 		mcp.WithString("source_url", mcp.Description("The URL of the source of the recipe"), mcp.DefaultString("")),
 		mcp.WithString("difficulty", mcp.Description("The difficulty of the recipe"), mcp.DefaultString("")),
+		mcp.WithString("categories", mcp.Description("Comma-separated category names; replaces the recipe's categories when supplied"), mcp.DefaultString("")),
+		mcp.WithString("nutritional_info", mcp.Description("Nutritional information"), mcp.DefaultString("")),
+		mcp.WithString("total_time", mcp.Description("Total preparation/cooking time"), mcp.DefaultString("")),
+		mcp.WithString("scale", mcp.Description("Recipe scaling factor"), mcp.DefaultString("")),
+		mcp.WithString("image_url", mcp.Description("External recipe image URL"), mcp.DefaultString("")),
+		mcp.WithNumber("rating", mcp.Description("Rating from 0 to 5")),
+		mcp.WithBoolean("on_favorites", mcp.Description("Favorite state")),
+		mcp.WithBoolean("is_pinned", mcp.Description("Pinned state")),
 	)
 	listRecipesTool := mcp.NewTool("list_recipes",
 		mcp.WithDescription("List all recipes in the Paprika collection, sorted alphabetically. Data is local and instant. Returns recipe name, UID, description, servings, and timing info. Use get_recipe with a UID to retrieve full details including ingredients and directions. To find recipes by ingredient or description text, use search_recipes instead. Call refresh_recipes to fetch the latest data from Paprika."),
@@ -189,6 +223,64 @@ func (s *Server) Start() {
 	)
 	refreshRecipesTool := mcp.NewTool("refresh_recipes",
 		mcp.WithDescription("Force an immediate refresh from the Paprika API. Use after editing recipes in the Paprika app. Returns cache statistics."),
+	)
+	uploadPhotoTool := mcp.NewTool("upload_recipe_photo",
+		mcp.WithDescription("Add a photo to a recipe. Provide an HTTPS/HTTP image URL, or base64 for programmatic callers. The image is normalized, resized, and synced as a Paprika gallery photo."),
+		mcp.WithString("recipe_uid", mcp.Description("Recipe UID"), mcp.Required()),
+		mcp.WithString("image_url", mcp.Description("HTTP(S) image URL; preferred for LLM callers"), mcp.DefaultString("")),
+		mcp.WithString("image_base64", mcp.Description("Base64 image bytes for programmatic callers/tests"), mcp.DefaultString("")),
+	)
+	listPhotosTool := mcp.NewTool("list_recipe_photos",
+		mcp.WithDescription("List photos attached to a recipe, including filenames, ordering, and hashes."),
+		mcp.WithString("recipe_uid", mcp.Description("Recipe UID"), mcp.Required()),
+	)
+	deletePhotoTool := mcp.NewTool("delete_recipe_photo",
+		mcp.WithDescription("Delete a recipe gallery photo by its photo UID. This is a Paprika sync tombstone."),
+		mcp.WithString("photo_uid", mcp.Description("Photo UID from list_recipe_photos"), mcp.Required()),
+	)
+	thumbnailTool := mcp.NewTool("set_recipe_thumbnail",
+		mcp.WithDescription("Make an existing recipe gallery photo the primary recipe thumbnail."),
+		mcp.WithString("recipe_uid", mcp.Description("Recipe UID"), mcp.Required()),
+		mcp.WithString("photo_uid", mcp.Description("Photo UID from list_recipe_photos"), mcp.Required()),
+	)
+	reorderPhotosTool := mcp.NewTool("reorder_recipe_photos",
+		mcp.WithDescription("Reorder all photos for a recipe. Pass photo UIDs in the desired order, comma-separated."),
+		mcp.WithString("recipe_uid", mcp.Description("Recipe UID"), mcp.Required()),
+		mcp.WithString("photo_uids", mcp.Description("Comma-separated photo UIDs in desired order"), mcp.Required()),
+	)
+	setCategoriesTool := mcp.NewTool("set_recipe_categories",
+		mcp.WithDescription("Replace all categories on a recipe. Pass an empty categories string to remove every category."),
+		mcp.WithString("recipe_uid", mcp.Description("Recipe UID"), mcp.Required()),
+		mcp.WithString("categories", mcp.Description("Comma-separated category names; empty clears all categories"), mcp.Required()),
+	)
+	createCategoryTool := mcp.NewTool("create_category",
+		mcp.WithDescription("Create a Paprika recipe category, optionally under a parent category UID."),
+		mcp.WithString("name", mcp.Description("Category name"), mcp.Required()),
+		mcp.WithString("parent_uid", mcp.Description("Optional parent category UID"), mcp.DefaultString("")),
+		mcp.WithNumber("order", mcp.Description("Optional display order"), mcp.DefaultNumber(0)),
+	)
+	renameCategoryTool := mcp.NewTool("rename_category",
+		mcp.WithDescription("Rename a Paprika category."),
+		mcp.WithString("category_uid", mcp.Description("Category UID"), mcp.Required()),
+		mcp.WithString("name", mcp.Description("New category name"), mcp.Required()),
+	)
+	moveCategoryTool := mcp.NewTool("move_category",
+		mcp.WithDescription("Move a category under another parent, or to the root when parent_uid is empty."),
+		mcp.WithString("category_uid", mcp.Description("Category UID"), mcp.Required()),
+		mcp.WithString("parent_uid", mcp.Description("New parent UID; empty means root"), mcp.DefaultString("")),
+	)
+	deleteCategoryTool := mcp.NewTool("delete_category",
+		mcp.WithDescription("Delete one or more categories. Pass category UIDs comma-separated."),
+		mcp.WithString("category_uids", mcp.Description("Comma-separated category UIDs"), mcp.Required()),
+	)
+	reorderCategoryTool := mcp.NewTool("reorder_categories",
+		mcp.WithDescription("Reorder categories. Pass category UIDs in desired order, comma-separated."),
+		mcp.WithString("category_uids", mcp.Description("Comma-separated category UIDs"), mcp.Required()),
+	)
+	bulkMoveCategoryTool := mcp.NewTool("bulk_move_categories",
+		mcp.WithDescription("Move multiple categories under one parent, or to the root when parent_uid is empty."),
+		mcp.WithString("category_uids", mcp.Description("Comma-separated category UIDs"), mcp.Required()),
+		mcp.WithString("parent_uid", mcp.Description("Destination parent UID; empty means root"), mcp.DefaultString("")),
 	)
 	listGroceryListsTool := mcp.NewTool("list_grocery_lists",
 		mcp.WithDescription("List all grocery/shopping lists in the Paprika account. Paprika supports multiple grocery lists (e.g. one per store). Each list has a UID and a name. One list is marked as the default. Use the list UIDs with add_grocery_item to add items to a specific list."),
@@ -262,6 +354,42 @@ func (s *Server) Start() {
 	}, server.ServerTool{
 		Tool:    listAislesTool,
 		Handler: s.listAisles,
+	}, server.ServerTool{
+		Tool:    uploadPhotoTool,
+		Handler: s.uploadRecipePhoto,
+	}, server.ServerTool{
+		Tool:    listPhotosTool,
+		Handler: s.listRecipePhotos,
+	}, server.ServerTool{
+		Tool:    deletePhotoTool,
+		Handler: s.deleteRecipePhoto,
+	}, server.ServerTool{
+		Tool:    setCategoriesTool,
+		Handler: s.setRecipeCategories,
+	}, server.ServerTool{
+		Tool:    thumbnailTool,
+		Handler: s.setRecipeThumbnail,
+	}, server.ServerTool{
+		Tool:    reorderPhotosTool,
+		Handler: s.reorderRecipePhotos,
+	}, server.ServerTool{
+		Tool:    createCategoryTool,
+		Handler: s.createCategory,
+	}, server.ServerTool{
+		Tool:    renameCategoryTool,
+		Handler: s.renameCategory,
+	}, server.ServerTool{
+		Tool:    moveCategoryTool,
+		Handler: s.moveCategory,
+	}, server.ServerTool{
+		Tool:    deleteCategoryTool,
+		Handler: s.deleteCategories,
+	}, server.ServerTool{
+		Tool:    reorderCategoryTool,
+		Handler: s.reorderCategories,
+	}, server.ServerTool{
+		Tool:    bulkMoveCategoryTool,
+		Handler: s.bulkMoveCategories,
 	})
 
 	s.logger.Info("serving stdio")
@@ -317,21 +445,34 @@ func (s *Server) createRecipe(ctx context.Context, req mcp.CallToolRequest) (*mc
 	difficulty := req.GetString("difficulty", "")
 	source := req.GetString("source", "")
 	sourceURL := req.GetString("source_url", "")
+	categories := s.resolveCategories(ctx, parseCategories(req.GetString("categories", "")))
+	rating := req.GetInt("rating", 0)
+	if rating < 0 || rating > 5 {
+		return mcp.NewToolResultError("rating must be between 0 and 5"), nil
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	recipe, err := s.paprika3.SaveRecipe(ctx, paprika.Recipe{
-		Name:        name,
-		Ingredients: ingredients,
-		Directions:  directions,
-		Description: description,
-		Servings:    servings,
-		PrepTime:    prepTime,
-		CookTime:    cookTime,
-		Notes:       notes,
-		Difficulty:  difficulty,
-		Source:      source,
-		SourceURL:   sourceURL,
+		Name:            name,
+		Ingredients:     ingredients,
+		Directions:      directions,
+		Description:     description,
+		Servings:        servings,
+		PrepTime:        prepTime,
+		CookTime:        cookTime,
+		Notes:           notes,
+		Difficulty:      difficulty,
+		Source:          source,
+		SourceURL:       sourceURL,
+		Categories:      categories,
+		NutritionalInfo: req.GetString("nutritional_info", ""),
+		TotalTime:       req.GetString("total_time", ""),
+		Scale:           req.GetString("scale", ""),
+		ImageURL:        req.GetString("image_url", ""),
+		Rating:          rating,
+		OnFavorites:     req.GetBool("on_favorites", false),
+		IsPinned:        req.GetBool("is_pinned", false),
 	})
 	if err != nil {
 		return nil, err
@@ -404,6 +545,33 @@ func (s *Server) updateRecipe(ctx context.Context, req mcp.CallToolRequest) (*mc
 	if val := req.GetString("source_url", ""); val != "" {
 		merged.SourceURL = val
 	}
+	if val := req.GetString("categories", ""); val != "" {
+		merged.Categories = s.resolveCategories(ctx, parseCategories(val))
+	}
+	if val := req.GetString("nutritional_info", ""); val != "" {
+		merged.NutritionalInfo = val
+	}
+	if val := req.GetString("total_time", ""); val != "" {
+		merged.TotalTime = val
+	}
+	if val := req.GetString("scale", ""); val != "" {
+		merged.Scale = val
+	}
+	if val := req.GetString("image_url", ""); val != "" {
+		merged.ImageURL = val
+	}
+	if hasArgument(req, "rating") {
+		merged.Rating = req.GetInt("rating", merged.Rating)
+		if merged.Rating < 0 || merged.Rating > 5 {
+			return mcp.NewToolResultError("rating must be between 0 and 5"), nil
+		}
+	}
+	if hasArgument(req, "on_favorites") {
+		merged.OnFavorites = req.GetBool("on_favorites", merged.OnFavorites)
+	}
+	if hasArgument(req, "is_pinned") {
+		merged.IsPinned = req.GetBool("is_pinned", merged.IsPinned)
+	}
 
 	saveCtx, saveCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer saveCancel()
@@ -424,6 +592,71 @@ func (s *Server) updateRecipe(ctx context.Context, req mcp.CallToolRequest) (*mc
 	}), nil
 }
 
+func parseCategories(raw string) []string {
+	parts := strings.Split(raw, ",")
+	seen := make(map[string]bool, len(parts))
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name := strings.TrimSpace(part)
+		key := strings.ToLower(name)
+		if name != "" && !seen[key] {
+			seen[key] = true
+			result = append(result, name)
+		}
+	}
+	return result
+}
+
+// Paprika 3 Android stores recipe categories as category UIDs. Older API
+// examples use names, so resolve names when the live category catalog is
+// available while retaining unknown values for compatibility with mocks and
+// older accounts.
+func (s *Server) resolveCategories(ctx context.Context, categories []string) []string {
+	client, ok := s.paprika3.(categoryClient)
+	if !ok || len(categories) == 0 {
+		return categories
+	}
+	response, err := client.ListCategories(ctx)
+	if err != nil {
+		return categories
+	}
+	byName := make(map[string]string, len(response.Result))
+	for _, category := range response.Result {
+		byName[strings.ToLower(strings.TrimSpace(category.Name))] = category.UID
+	}
+	resolved := make([]string, 0, len(categories))
+	for _, category := range categories {
+		if uid, found := byName[strings.ToLower(category)]; found {
+			resolved = append(resolved, uid)
+		} else {
+			resolved = append(resolved, category)
+		}
+	}
+	return resolved
+}
+
+func hasArgument(req mcp.CallToolRequest, key string) bool {
+	_, ok := req.GetArguments()[key]
+	return ok
+}
+
+func (s *Server) setRecipeCategories(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	uid, err := req.RequireString("recipe_uid")
+	if err != nil || uid == "" {
+		return mcp.NewToolResultError("recipe_uid is required"), nil
+	}
+	recipe, err := s.paprika3.GetRecipe(ctx, uid)
+	if err != nil {
+		return nil, err
+	}
+	recipe.Categories = s.resolveCategories(ctx, parseCategories(req.GetString("categories", "")))
+	saved, err := s.paprika3.SaveRecipe(ctx, *recipe)
+	if err != nil {
+		return nil, err
+	}
+	s.cache.Put(saved)
+	return mcp.NewToolResultText(fmt.Sprintf("Updated categories for %s: %s", saved.Name, strings.Join(saved.Categories, ", "))), nil
+}
 
 func formatRecipeList(recipes []paprika.Recipe) string {
 	var resultText strings.Builder
@@ -464,12 +697,16 @@ func (s *Server) listRecipes(ctx context.Context, req mcp.CallToolRequest) (*mcp
 
 	limit := req.GetInt("limit", 0)
 	category := strings.TrimSpace(req.GetString("category", ""))
+	categoryKey := category
+	if category != "" {
+		categoryKey = s.resolveCategories(ctx, []string{category})[0]
+	}
 
 	// Use cache; List() already returns sorted, non-trashed recipes.
 	recipePointers := s.cache.List()
 	recipes := make([]paprika.Recipe, 0, len(recipePointers))
 	for _, r := range recipePointers {
-		if category != "" && !recipeHasCategory(r, category) {
+		if categoryKey != "" && !recipeHasCategory(r, categoryKey) {
 			continue
 		}
 		recipes = append(recipes, *r)
@@ -516,6 +753,10 @@ func (s *Server) searchRecipes(ctx context.Context, req mcp.CallToolRequest) (*m
 
 	limit := req.GetInt("limit", 10)
 	category := strings.TrimSpace(req.GetString("category", ""))
+	categoryKey := category
+	if category != "" {
+		categoryKey = s.resolveCategories(ctx, []string{category})[0]
+	}
 
 	// Use cache Search which handles lowercasing, word splitting, and sorting.
 	// Search with unlimited results when category filtering is needed, then apply the category filter.
@@ -527,7 +768,7 @@ func (s *Server) searchRecipes(ctx context.Context, req mcp.CallToolRequest) (*m
 
 	matched := make([]paprika.Recipe, 0, len(matchedPointers))
 	for _, r := range matchedPointers {
-		if category != "" && !recipeHasCategory(r, category) {
+		if categoryKey != "" && !recipeHasCategory(r, categoryKey) {
 			continue
 		}
 		matched = append(matched, *r)
@@ -844,6 +1085,16 @@ func (s *Server) listCategories(ctx context.Context, req mcp.CallToolRequest) (*
 	}
 
 	recipes := s.cache.List()
+	remoteCategories := map[string]paprika.Category{}
+	if cc, ok := s.paprika3.(categoryClient); ok {
+		if response, err := cc.ListCategories(ctx); err == nil {
+			for _, category := range response.Result {
+				remoteCategories[strings.ToLower(category.UID)] = category
+			}
+		} else {
+			s.logger.Warn("failed to load category hierarchy", "error", err)
+		}
+	}
 
 	// Collect category counts using case-insensitive dedup (preserve original casing from first seen).
 	type catEntry struct {
@@ -859,6 +1110,11 @@ func (s *Server) listCategories(ctx context.Context, req mcp.CallToolRequest) (*
 			} else {
 				byKey[key] = &catEntry{display: cat, count: 1}
 			}
+		}
+	}
+	for key, category := range remoteCategories {
+		if _, ok := byKey[key]; !ok {
+			byKey[key] = &catEntry{display: category.Name}
 		}
 	}
 
@@ -880,11 +1136,22 @@ func (s *Server) listCategories(ctx context.Context, req mcp.CallToolRequest) (*
 		resultText.WriteString(fmt.Sprintf("Found %d category/categories:\n\n", len(keys)))
 		for _, k := range keys {
 			e := byKey[k]
-			resultText.WriteString(fmt.Sprintf("- %s (%d recipe", e.display, e.count))
+			display := e.display
+			if category, ok := remoteCategories[k]; ok {
+				display = category.Name
+			}
+			resultText.WriteString(fmt.Sprintf("- %s (%d recipe", display, e.count))
 			if e.count != 1 {
 				resultText.WriteString("s")
 			}
-			resultText.WriteString(")\n")
+			resultText.WriteString(")")
+			if category, ok := remoteCategories[k]; ok {
+				if category.ParentUID != "" {
+					resultText.WriteString(fmt.Sprintf(" [parent UID: %s]", category.ParentUID))
+				}
+				resultText.WriteString(fmt.Sprintf(" [UID: %s, order: %d]", category.UID, category.OrderFlag))
+			}
+			resultText.WriteString("\n")
 		}
 	}
 	if filling {
@@ -892,6 +1159,372 @@ func (s *Server) listCategories(ctx context.Context, req mcp.CallToolRequest) (*
 	}
 
 	return mcp.NewToolResultText(resultText.String()), nil
+}
+
+func (s *Server) uploadRecipePhoto(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	client, ok := s.paprika3.(photoClient)
+	if !ok {
+		return mcp.NewToolResultError("photo support is unavailable"), nil
+	}
+	recipeUID, err := req.RequireString("recipe_uid")
+	if err != nil || recipeUID == "" {
+		return mcp.NewToolResultError("recipe_uid is required"), nil
+	}
+	imageURL := strings.TrimSpace(req.GetString("image_url", ""))
+	b64 := strings.TrimSpace(req.GetString("image_base64", ""))
+	if imageURL == "" && b64 == "" {
+		return mcp.NewToolResultError("provide image_url or image_base64"), nil
+	}
+	if imageURL != "" && b64 != "" {
+		return mcp.NewToolResultError("provide only one of image_url or image_base64"), nil
+	}
+	var data []byte
+	if b64 != "" {
+		data, err = base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return mcp.NewToolResultError("invalid image_base64"), nil
+		}
+	} else {
+		u, parseErr := url.Parse(imageURL)
+		if parseErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return mcp.NewToolResultError("image_url must be an HTTP(S) URL"), nil
+		}
+		reqHTTP, _ := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+		resp, fetchErr := http.DefaultClient.Do(reqHTTP)
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return mcp.NewToolResultError(fmt.Sprintf("image download failed: %s", resp.Status)), nil
+		}
+		data, err = io.ReadAll(io.LimitReader(resp.Body, 12<<20))
+		if err != nil {
+			return nil, err
+		}
+		if len(data) >= 12<<20 {
+			return mcp.NewToolResultError("image is larger than 12 MiB"), nil
+		}
+	}
+	if len(data) == 0 {
+		return mcp.NewToolResultError("image is empty"), nil
+	}
+	photo, err := client.UploadPhoto(ctx, recipeUID, data)
+	if err != nil {
+		return nil, err
+	}
+	if updated, fetchErr := s.paprika3.GetRecipe(ctx, recipeUID); fetchErr == nil {
+		s.cache.Put(updated)
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Uploaded photo %s to recipe %s (order %d).", photo.UID, recipeUID, photo.OrderFlag)), nil
+}
+
+func (s *Server) listRecipePhotos(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	client, ok := s.paprika3.(photoClient)
+	if !ok {
+		return mcp.NewToolResultError("photo support is unavailable"), nil
+	}
+	recipeUID, err := req.RequireString("recipe_uid")
+	if err != nil || recipeUID == "" {
+		return mcp.NewToolResultError("recipe_uid is required"), nil
+	}
+	photos, err := client.ListPhotos(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Photos for %s\n\n", recipeUID))
+	count := 0
+	for _, p := range photos.Result {
+		if p.RecipeUID == recipeUID && !p.Deleted {
+			count++
+			sb.WriteString(fmt.Sprintf("- UID: `%s`, order: %d, filename: `%s`, hash: `%s`\n", p.UID, p.OrderFlag, p.Filename, p.Hash))
+		}
+	}
+	if count == 0 {
+		sb.WriteString("No photos found.\n")
+	}
+	return mcp.NewToolResultText(sb.String()), nil
+}
+
+func (s *Server) deleteRecipePhoto(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	client, ok := s.paprika3.(photoClient)
+	if !ok {
+		return mcp.NewToolResultError("photo support is unavailable"), nil
+	}
+	uid, err := req.RequireString("photo_uid")
+	if err != nil || uid == "" {
+		return mcp.NewToolResultError("photo_uid is required"), nil
+	}
+	photos, err := client.ListPhotos(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range photos.Result {
+		if p.UID == uid && !p.Deleted {
+			if err := client.DeletePhoto(ctx, p); err != nil {
+				return nil, err
+			}
+			if updated, fetchErr := s.paprika3.GetRecipe(ctx, p.RecipeUID); fetchErr == nil {
+				s.cache.Put(updated)
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Deleted photo %s.", uid)), nil
+		}
+	}
+	return mcp.NewToolResultError("photo not found"), nil
+}
+
+func splitCSV(raw string) []string {
+	var result []string
+	for _, item := range strings.Split(raw, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func (s *Server) setRecipeThumbnail(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	client, ok := s.paprika3.(photoClient)
+	if !ok {
+		return mcp.NewToolResultError("photo support is unavailable"), nil
+	}
+	recipeUID := req.GetString("recipe_uid", "")
+	photoUID := req.GetString("photo_uid", "")
+	if recipeUID == "" || photoUID == "" {
+		return mcp.NewToolResultError("recipe_uid and photo_uid are required"), nil
+	}
+	photos, err := client.ListPhotos(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, photo := range photos.Result {
+		if photo.UID == photoUID && photo.RecipeUID == recipeUID && !photo.Deleted {
+			if err := client.SetPrimaryPhoto(ctx, recipeUID, photo); err != nil {
+				return nil, err
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Photo %s is now the primary thumbnail.", photoUID)), nil
+		}
+	}
+	return mcp.NewToolResultError("photo not found for recipe"), nil
+}
+
+func (s *Server) reorderRecipePhotos(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	client, ok := s.paprika3.(photoClient)
+	if !ok {
+		return mcp.NewToolResultError("photo support is unavailable"), nil
+	}
+	recipeUID := req.GetString("recipe_uid", "")
+	order := splitCSV(req.GetString("photo_uids", ""))
+	if recipeUID == "" || len(order) == 0 {
+		return mcp.NewToolResultError("recipe_uid and photo_uids are required"), nil
+	}
+	photos, err := client.ListPhotos(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byUID := make(map[string]paprika.Photo)
+	for _, photo := range photos.Result {
+		if photo.RecipeUID == recipeUID && !photo.Deleted {
+			byUID[photo.UID] = photo
+		}
+	}
+	if len(order) != len(byUID) {
+		return mcp.NewToolResultError("photo_uids must include every active photo exactly once"), nil
+	}
+	seen := map[string]bool{}
+	for index, uid := range order {
+		photo, found := byUID[uid]
+		if !found || seen[uid] {
+			return mcp.NewToolResultError("photo_uids contains an invalid or duplicate photo UID"), nil
+		}
+		seen[uid] = true
+		photo.OrderFlag = index
+		photo.Name = fmt.Sprintf("%d", index+1)
+		if err := client.SavePhoto(ctx, photo); err != nil {
+			return nil, err
+		}
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Reordered %d recipe photos.", len(order))), nil
+}
+
+func (s *Server) categoryByUID(ctx context.Context, uid string) (paprika.Category, error) {
+	client, ok := s.paprika3.(categoryClient)
+	if !ok {
+		return paprika.Category{}, fmt.Errorf("category support is unavailable")
+	}
+	response, err := client.ListCategories(ctx)
+	if err != nil {
+		return paprika.Category{}, err
+	}
+	for _, category := range response.Result {
+		if category.UID == uid {
+			return category, nil
+		}
+	}
+	return paprika.Category{}, fmt.Errorf("category not found: %s", uid)
+}
+
+func (s *Server) createCategory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	client, ok := s.paprika3.(categoryClient)
+	if !ok {
+		return mcp.NewToolResultError("category support is unavailable"), nil
+	}
+	name := strings.TrimSpace(req.GetString("name", ""))
+	if name == "" {
+		return mcp.NewToolResultError("name is required"), nil
+	}
+	order := req.GetInt("order", 0)
+	if !hasArgument(req, "order") {
+		if response, listErr := client.ListCategories(ctx); listErr == nil {
+			for _, existing := range response.Result {
+				if existing.OrderFlag >= order {
+					order = existing.OrderFlag + 1
+				}
+			}
+		}
+	}
+	category, err := client.SaveCategory(ctx, paprika.Category{Name: name, ParentUID: req.GetString("parent_uid", ""), OrderFlag: order})
+	if err != nil {
+		return nil, err
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Created category %s (%s).", category.Name, category.UID)), nil
+}
+
+func (s *Server) renameCategory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	client, ok := s.paprika3.(categoryClient)
+	if !ok {
+		return mcp.NewToolResultError("category support is unavailable"), nil
+	}
+	category, err := s.categoryByUID(ctx, req.GetString("category_uid", ""))
+	if err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(req.GetString("name", ""))
+	if name == "" {
+		return mcp.NewToolResultError("name is required"), nil
+	}
+	oldName := category.Name
+	category.Name = name
+	_, err = client.SaveCategory(ctx, category)
+	if err != nil {
+		return nil, err
+	}
+	for _, recipe := range s.cache.List() {
+		changed := false
+		for index, existing := range recipe.Categories {
+			if strings.EqualFold(existing, oldName) {
+				recipe.Categories[index] = name
+				changed = true
+			}
+		}
+		if changed {
+			if saved, saveErr := s.paprika3.SaveRecipe(ctx, *recipe); saveErr == nil {
+				s.cache.Put(saved)
+			}
+		}
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Renamed category to %s.", name)), nil
+}
+
+func (s *Server) moveCategory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	client, ok := s.paprika3.(categoryClient)
+	if !ok {
+		return mcp.NewToolResultError("category support is unavailable"), nil
+	}
+	category, err := s.categoryByUID(ctx, req.GetString("category_uid", ""))
+	if err != nil {
+		return nil, err
+	}
+	category.ParentUID = req.GetString("parent_uid", "")
+	_, err = client.SaveCategory(ctx, category)
+	if err != nil {
+		return nil, err
+	}
+	return mcp.NewToolResultText("Moved category."), nil
+}
+
+func (s *Server) deleteCategories(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	client, ok := s.paprika3.(categoryClient)
+	if !ok {
+		return mcp.NewToolResultError("category support is unavailable"), nil
+	}
+	uids := splitCSV(req.GetString("category_uids", ""))
+	if len(uids) == 0 {
+		return mcp.NewToolResultError("category_uids is required"), nil
+	}
+	for _, uid := range uids {
+		category, err := s.categoryByUID(ctx, uid)
+		if err != nil {
+			return nil, err
+		}
+		if err := client.DeleteCategory(ctx, category); err != nil {
+			return nil, err
+		}
+		for _, recipe := range s.cache.List() {
+			filtered := recipe.Categories[:0]
+			changed := false
+			for _, existing := range recipe.Categories {
+				if strings.EqualFold(existing, category.Name) || strings.EqualFold(existing, category.UID) {
+					changed = true
+					continue
+				}
+				filtered = append(filtered, existing)
+			}
+			if changed {
+				recipe.Categories = filtered
+				if saved, saveErr := s.paprika3.SaveRecipe(ctx, *recipe); saveErr == nil {
+					s.cache.Put(saved)
+				}
+			}
+		}
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Deleted %d categories.", len(uids))), nil
+}
+
+func (s *Server) reorderCategories(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	client, ok := s.paprika3.(categoryClient)
+	if !ok {
+		return mcp.NewToolResultError("category support is unavailable"), nil
+	}
+	uids := splitCSV(req.GetString("category_uids", ""))
+	if len(uids) == 0 {
+		return mcp.NewToolResultError("category_uids is required"), nil
+	}
+	for index, uid := range uids {
+		category, err := s.categoryByUID(ctx, uid)
+		if err != nil {
+			return nil, err
+		}
+		category.OrderFlag = index
+		if _, err := client.SaveCategory(ctx, category); err != nil {
+			return nil, err
+		}
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Reordered %d categories.", len(uids))), nil
+}
+
+func (s *Server) bulkMoveCategories(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	client, ok := s.paprika3.(categoryClient)
+	if !ok {
+		return mcp.NewToolResultError("category support is unavailable"), nil
+	}
+	uids := splitCSV(req.GetString("category_uids", ""))
+	if len(uids) == 0 {
+		return mcp.NewToolResultError("category_uids is required"), nil
+	}
+	parent := req.GetString("parent_uid", "")
+	for _, uid := range uids {
+		category, err := s.categoryByUID(ctx, uid)
+		if err != nil {
+			return nil, err
+		}
+		category.ParentUID = parent
+		if _, err := client.SaveCategory(ctx, category); err != nil {
+			return nil, err
+		}
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Moved %d categories.", len(uids))), nil
 }
 
 func (s *Server) listAisles(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -9,11 +9,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"log/slog"
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/textproto"
 	"runtime"
 	"sort"
 	"strings"
@@ -435,6 +440,35 @@ type Recipe struct {
 	PhotoURL        string   `json:"photo_url"`
 }
 
+// Photo is a full-size recipe gallery photo. Paprika stores photos as
+// independent sync entities; Recipe.Photo and Recipe.PhotoLarge point at the
+// primary photo's thumbnail and full-size file respectively.
+type Photo struct {
+	UID       string `json:"uid"`
+	RecipeUID string `json:"recipe_uid"`
+	Filename  string `json:"filename"`
+	Hash      string `json:"hash"`
+	Name      string `json:"name"`
+	OrderFlag int    `json:"order_flag"`
+	Deleted   bool   `json:"deleted"`
+}
+
+type PhotoResponse struct {
+	Result []Photo `json:"result"`
+}
+
+type Category struct {
+	UID       string `json:"uid"`
+	Name      string `json:"name"`
+	ParentUID string `json:"parent_uid"`
+	OrderFlag int    `json:"order_flag"`
+	Deleted   bool   `json:"deleted"`
+}
+
+type CategoryResponse struct {
+	Result []Category `json:"result"`
+}
+
 func (r *Recipe) ResourceDescription() string {
 	if len(r.Description) == 0 {
 		return fmt.Sprintf("A recipe for %s", r.Name)
@@ -678,6 +712,13 @@ func isErrorResponse(body []byte) error {
 // postV2 sends a gzipped JSON payload to a V2 API endpoint using multipart form encoding.
 // Uses the Bearer token set on the HTTP client's roundTripper.
 func (c *Client) postV2(ctx context.Context, endpoint string, v interface{}) error {
+	return c.postMultipartV2(ctx, endpoint, v, "", nil)
+}
+
+// postMultipartV2 sends the normal gzipped sync entity and, when imageName
+// and imageBytes are supplied, a raw JPEG photo_upload part. Paprika does not
+// gzip or base64-encode the image part.
+func (c *Client) postMultipartV2(ctx context.Context, endpoint string, v interface{}, imageName string, imageBytes []byte) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("failed to marshal data: %w", err)
@@ -703,6 +744,18 @@ func (c *Client) postV2(ctx context.Context, endpoint string, v interface{}) err
 	}
 	if _, err := part.Write(gzipBuf.Bytes()); err != nil {
 		return fmt.Errorf("failed to write form data: %w", err)
+	}
+	if len(imageBytes) > 0 {
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="photo_upload"; filename="%s"`, imageName))
+		header.Set("Content-Type", "image/jpeg")
+		part, err := mpWriter.CreatePart(header)
+		if err != nil {
+			return fmt.Errorf("failed to create photo upload: %w", err)
+		}
+		if _, err := part.Write(imageBytes); err != nil {
+			return fmt.Errorf("failed to write photo upload: %w", err)
+		}
 	}
 	if err := mpWriter.Close(); err != nil {
 		return fmt.Errorf("failed to close multipart writer: %w", err)
@@ -737,15 +790,215 @@ func (c *Client) postV2(ctx context.Context, endpoint string, v interface{}) err
 	return nil
 }
 
+func resizeImage(src image.Image, max int) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= max && h <= max {
+		return src
+	}
+	scale := float64(max) / float64(w)
+	if float64(h)*scale > float64(max) {
+		scale = float64(max) / float64(h)
+	}
+	nw, nh := int(float64(w)*scale), int(float64(h)*scale)
+	if nw < 1 {
+		nw = 1
+	}
+	if nh < 1 {
+		nh = 1
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
+	for y := 0; y < nh; y++ {
+		for x := 0; x < nw; x++ {
+			dst.Set(x, y, src.At(b.Min.X+x*w/nw, b.Min.Y+y*h/nh))
+		}
+	}
+	return dst
+}
 
+func encodeJPEG(data []byte, max int) ([]byte, error) {
+	src, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("decode image: %w", err)
+	}
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, resizeImage(src, max), &jpeg.Options{Quality: 90}); err != nil {
+		return nil, fmt.Errorf("encode JPEG: %w", err)
+	}
+	return out.Bytes(), nil
+}
+
+// ListPhotos returns the server's photo catalog. The caller filters by
+// recipe_uid because the endpoint is account-wide.
+func (c *Client) ListPhotos(ctx context.Context) (*PhotoResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://paprikaapp.com/api/v2/sync/photos", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get photos: %s", resp.Status)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var result PhotoResponse
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// UploadPhoto follows Paprika's two-entity protocol. The recipe receives a
+// 280px thumbnail; the gallery receives the resized full image.
+func (c *Client) UploadPhoto(ctx context.Context, recipeUID string, input []byte) (*Photo, error) {
+	recipe, err := c.GetRecipe(ctx, recipeUID)
+	if err != nil {
+		return nil, fmt.Errorf("get recipe before photo upload: %w", err)
+	}
+	full, err := encodeJPEG(input, 2048)
+	if err != nil {
+		return nil, err
+	}
+	thumb, err := encodeJPEG(full, 280)
+	if err != nil {
+		return nil, err
+	}
+
+	photos, err := c.ListPhotos(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list photos before upload: %w", err)
+	}
+	order := -1
+	for _, p := range photos.Result {
+		if p.RecipeUID == recipeUID && !p.Deleted && p.OrderFlag > order {
+			order = p.OrderFlag
+		}
+	}
+	order++
+	photoUID := strings.ToUpper(uuid.New().String())
+	thumbUID := strings.ToUpper(uuid.New().String())
+	photo := Photo{UID: photoUID, RecipeUID: recipeUID, Filename: photoUID + ".jpg", Hash: sha256Hex(full), Name: fmt.Sprintf("%d", order+1), OrderFlag: order}
+	recipe.Photo = thumbUID + ".jpg"
+	recipe.PhotoLarge = photo.Filename
+	recipe.PhotoHash = sha256Hex(thumb)
+	if err := recipe.updateHash(); err != nil {
+		return nil, fmt.Errorf("hash recipe photo update: %w", err)
+	}
+	if err := c.postMultipartV2(ctx, fmt.Sprintf("https://paprikaapp.com/api/v2/sync/recipe/%s/", recipeUID), recipe, recipe.Photo, thumb); err != nil {
+		return nil, fmt.Errorf("upload recipe thumbnail: %w", err)
+	}
+	if err := c.postMultipartV2(ctx, fmt.Sprintf("https://paprikaapp.com/api/v2/sync/photo/%s/", photoUID), photo, photo.Filename, full); err != nil {
+		return nil, fmt.Errorf("upload recipe photo: %w", err)
+	}
+	_ = c.notify(ctx)
+	return &photo, nil
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// DeletePhoto writes Paprika's normal soft-delete tombstone for a photo.
+func (c *Client) DeletePhoto(ctx context.Context, photo Photo) error {
+	if recipe, err := c.GetRecipe(ctx, photo.RecipeUID); err == nil {
+		if recipe.PhotoLarge == photo.Filename || recipe.Photo == photo.Filename {
+			recipe.Photo = ""
+			recipe.PhotoLarge = ""
+			recipe.PhotoHash = ""
+			if _, err := c.SaveRecipe(ctx, *recipe); err != nil {
+				return fmt.Errorf("clear deleted photo from recipe: %w", err)
+			}
+		}
+	}
+	photo.Deleted = true
+	if err := c.postV2(ctx, fmt.Sprintf("https://paprikaapp.com/api/v2/sync/photo/%s/", photo.UID), photo); err != nil {
+		return fmt.Errorf("delete photo: %w", err)
+	}
+	return c.notify(ctx)
+}
+
+func (c *Client) SavePhoto(ctx context.Context, photo Photo) error {
+	if err := c.postV2(ctx, fmt.Sprintf("https://paprikaapp.com/api/v2/sync/photo/%s/", photo.UID), photo); err != nil {
+		return err
+	}
+	return c.notify(ctx)
+}
+
+// SetPrimaryPhoto updates the recipe's primary-photo pointers. The Android
+// client uses separate thumbnail/full files; when only the catalog metadata is
+// available, using the gallery filename for both lets Paprika regenerate/use
+// the primary image on the next sync.
+func (c *Client) SetPrimaryPhoto(ctx context.Context, recipeUID string, photo Photo) error {
+	recipe, err := c.GetRecipe(ctx, recipeUID)
+	if err != nil {
+		return err
+	}
+	recipe.Photo = photo.Filename
+	recipe.PhotoLarge = photo.Filename
+	recipe.PhotoHash = photo.Hash
+	_, err = c.SaveRecipe(ctx, *recipe)
+	return err
+}
+
+func (c *Client) SaveCategory(ctx context.Context, category Category) (*Category, error) {
+	if category.UID == "" {
+		category.UID = strings.ToUpper(uuid.New().String())
+	}
+	if err := c.postV2(ctx, "https://paprikaapp.com/api/v2/sync/categories/", []Category{category}); err != nil {
+		return nil, fmt.Errorf("save category: %w", err)
+	}
+	_ = c.notify(ctx)
+	return &category, nil
+}
+
+func (c *Client) DeleteCategory(ctx context.Context, category Category) error {
+	category.Deleted = true
+	if err := c.postV2(ctx, "https://paprikaapp.com/api/v2/sync/categories/", []Category{category}); err != nil {
+		return fmt.Errorf("delete category: %w", err)
+	}
+	return c.notify(ctx)
+}
+
+// ListCategories returns the category hierarchy. Recipe categories themselves
+// remain name strings in Recipe.Categories.
+func (c *Client) ListCategories(ctx context.Context) (*CategoryResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://paprikaapp.com/api/v2/sync/categories", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get categories: %s", resp.Status)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var result CategoryResponse
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
 
 type GroceryList struct {
-	UID            string `json:"uid"`
-	Name           string `json:"name"`
-	OrderFlag      int    `json:"order_flag"`
-	IsDefault      bool   `json:"is_default"`
-	RemindersList  string `json:"reminders_list"`
-	Deleted        bool   `json:"deleted"`
+	UID           string `json:"uid"`
+	Name          string `json:"name"`
+	OrderFlag     int    `json:"order_flag"`
+	IsDefault     bool   `json:"is_default"`
+	RemindersList string `json:"reminders_list"`
+	Deleted       bool   `json:"deleted"`
 }
 
 type GroceryListResponse struct {
