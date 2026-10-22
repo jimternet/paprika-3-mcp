@@ -15,7 +15,7 @@ See anything missing? Open an issue on this repo to request a feature!
 #### 📄 **Resources**
 
 - Recipes ✅
-- Recipe Photos 🚧
+- Recipe Photos ✅
 
 #### 🛠 **Tools**
 
@@ -26,6 +26,14 @@ See anything missing? Open an issue on this repo to request a feature!
 - `list_recipes` — List all recipes with names, UIDs, and basic info (fast, parallel fetch)
 - `search_recipes` — Deep search recipes by keyword across name, ingredients, and description
 - `delete_recipe` — Move a recipe to the trash by UID (soft delete; recoverable in the Paprika app)
+- `upload_recipe_photo` — Add a URL or base64 image to a recipe; Paprika receives a thumbnail and gallery photo
+- `list_recipe_photos` — List synced recipe gallery photos and their order
+- `delete_recipe_photo` — Soft-delete a recipe gallery photo
+- Recipe categories can be assigned/replaced with the `categories` argument on create/update; `list_categories` also reports synced hierarchy metadata
+- `set_recipe_categories` — Replace or clear all categories on an existing recipe
+- `set_recipe_thumbnail` / `reorder_recipe_photos` — Manage the primary photo and gallery order
+- `create_category`, `rename_category`, `move_category`, `delete_category`, `reorder_categories`, `bulk_move_categories` — Manage the category hierarchy
+- Recipe create/update also exposes nutritional info, total time, scale, rating, external image URL, favorites, and pinned state
 
 **Meal Planning**
 - `list_meal_plan` — View scheduled meals, optionally filtered by date range
